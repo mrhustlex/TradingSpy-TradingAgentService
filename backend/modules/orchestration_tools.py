@@ -156,13 +156,14 @@ def run_backtest(strategy_name: str, dataset_filename: str) -> dict:
 
 
 @tool
-def download_market_data(ticker: str, period: str = "1y", interval: str = "1d") -> dict:
+def download_market_data(ticker: str, period: str = "1y", interval: str = "1d", extended_hours: bool = False) -> dict:
     """Download historical market data for a ticker. This starts an async task.
     
     Args:
         ticker: Stock symbol (e.g., "AAPL", "QQQ", "SPY")
         period: Time period - "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"
         interval: Data interval - "1m", "5m", "15m", "30m", "1h", "1d", "1wk", "1mo"
+        extended_hours: Include premarket/postmarket candles for intraday intervals
     
     Returns:
         dict with 'task_id' to track the download progress
@@ -179,7 +180,8 @@ def download_market_data(ticker: str, period: str = "1y", interval: str = "1d") 
         payload = {
             "tickers": [ticker.upper()],
             "period": period,
-            "interval": interval
+            "interval": interval,
+            "extended_hours": bool(extended_hours)
         }
         response = requests.post(f"{BACKEND_URL}/api/market-data/download", json=payload, timeout=10)
         if response.status_code == 200:
@@ -191,7 +193,8 @@ def download_market_data(ticker: str, period: str = "1y", interval: str = "1d") 
                 "ticker": ticker.upper(),
                 "period": period,
                 "interval": interval,
-                "expected_filename": f"{ticker.upper()}_{interval}.csv"
+                "extended_hours": bool(extended_hours),
+                "expected_filename": f"{ticker.lower()}-{interval}-{period}{'-extended' if extended_hours else ''}.txt"
             }
         return {"success": False, "error": f"HTTP {response.status_code}"}
     except Exception as e:

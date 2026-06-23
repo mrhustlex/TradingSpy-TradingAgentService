@@ -583,6 +583,7 @@ class DownloadRequest(BaseModel):
     interval: Optional[str] = "1d"
     period: Optional[str] = "5y"
     suite: Optional[bool] = False
+    extended_hours: Optional[bool] = False
 
 class ImprovementRequest(BaseModel):
     strategy_name: str
@@ -2029,9 +2030,16 @@ async def download_data(request: DownloadRequest, background_tasks: BackgroundTa
                             "progress": int((completed / total_downloads) * 100),
                             "current": f"Downloading {ticker} {interval}/{period}..."
                         })
-                        download_ticker_data(ticker, interval=interval, period=period, output_dir=user_dir)
+                        download_ticker_data(
+                            ticker,
+                            interval=interval,
+                            period=period,
+                            output_dir=user_dir,
+                            extended_hours=bool(request.extended_hours),
+                        )
                         # Track the actual filename created (format: ticker-interval-period.txt)
-                        filename = f"{ticker.lower()}-{interval}-{period}.txt"
+                        suffix = "-extended" if request.extended_hours else ""
+                        filename = f"{ticker.lower()}-{interval}-{period}{suffix}.txt"
                         downloaded_files.append(filename)
                         logger.info(f"Downloaded {ticker} {interval}/{period} → {filename}")
                         completed += 1
@@ -5438,6 +5446,8 @@ Each strategy MUST strictly follow Backtrader conventions:
 12. Never use `self.position.baropen`; Backtrader Position does not expose it. If a strategy needs a time stop, initialize `self.entry_bar = None` in `__init__`, set `self.entry_bar = len(self)` immediately after `self.buy()`, and reset it after exit.
 13. Never read data with absolute state indexes like `self.data.close[self.entry_bar]`; Backtrader line indexes are relative. If a strategy needs the entry price, initialize `self.entry_price = None` and set `self.entry_price = float(self.data.close[0])` when entering.
 14. For trailing stops, use scalar state only: initialize `self.stop_price = None` or `self.highest_close = None`, update it with `float(self.data.close[0])`, and compare `self.data.close[0]` to that scalar. Do not write or read `self.stop_price[0]`.
+15. For intraday, premarket, postmarket, or session-aware strategies, use `self.data.datetime.datetime(0)` in `next()` to inspect the current bar time. Track daily/session state with scalar attributes such as `self.current_date`, `self.premarket_open`, `self.premarket_high`, `self.premarket_last`, and `self.traded_today`. Reset those values when the date changes. Do not use wall-clock `datetime.now()` for backtest decisions.
+16. If the user asks for rules like "premarket up X%, enter, then leave", calculate the premarket move from extended-hours bars before the regular open, optionally confirm with premarket volume using `self.data.volume[0]` or accumulated scalar volume, enter only during the intended regular-session time window, and close by the requested exit time or before the session ends. Guard the logic so it also works when the dataset does not contain extended-hours bars.
 SAFE TIME-EXIT EXAMPLE:
 ```
 self.entry_bar = None

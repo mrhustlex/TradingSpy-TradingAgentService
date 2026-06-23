@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def download_ticker_data(ticker, start_date=None, end_date=None, interval='1d', period=None, output_dir='datas'):
+def download_ticker_data(ticker, start_date=None, end_date=None, interval='1d', period=None, output_dir='datas', extended_hours=False):
     """
     Downloads and saves data for a single ticker in Backtrader CSV format.
     Ensures safe handling of yfinance API responses and formatting.
@@ -19,14 +19,14 @@ def download_ticker_data(ticker, start_date=None, end_date=None, interval='1d', 
         if period:
             logger.info(f"[{ticker}] Requesting {period} history at {interval}...")
             # Note: 'threads' is NOT supported by Ticker.history() in >=0.2.0
-            data = t_obj.history(period=period, interval=interval, auto_adjust=True)
+            data = t_obj.history(period=period, interval=interval, auto_adjust=True, prepost=bool(extended_hours))
         else:
             if not start_date:
                 start_date = '2000-01-01'
             if not end_date:
                 end_date = datetime.date.today().strftime('%Y-%m-%d')
             logger.info(f"[{ticker}] Requesting {start_date} to {end_date} at {interval}...")
-            data = t_obj.history(start=start_date, end=end_date, interval=interval, auto_adjust=True)
+            data = t_obj.history(start=start_date, end=end_date, interval=interval, auto_adjust=True, prepost=bool(extended_hours))
         
         # 2. Basic validation
         if data is None or data.empty:
@@ -40,7 +40,8 @@ def download_ticker_data(ticker, start_date=None, end_date=None, interval='1d', 
         # 3. Save Logic
         os.makedirs(output_dir, exist_ok=True)
         if period:
-            filename = f"{ticker.lower()}-{interval}-{period}.txt"
+            suffix = "-extended" if extended_hours else ""
+            filename = f"{ticker.lower()}-{interval}-{period}{suffix}.txt"
         else:
             s_year = start_date.split('-')[0]
             e_year = end_date.split('-')[0] if end_date else datetime.datetime.now().year
@@ -71,7 +72,7 @@ def download_ticker_data(ticker, start_date=None, end_date=None, interval='1d', 
                     
                     if start_fetch < datetime.datetime.now():
                         logger.info(f"[{ticker}] File exists (last: {last_date}). Fetching new data from {start_fetch}...")
-                        new_data = t_obj.history(start=start_fetch, interval=interval, auto_adjust=True)
+                        new_data = t_obj.history(start=start_fetch, interval=interval, auto_adjust=True, prepost=bool(extended_hours))
                         
                         if isinstance(new_data.columns, pd.MultiIndex):
                             new_data.columns = new_data.columns.get_level_values(0)

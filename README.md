@@ -56,6 +56,7 @@ Generate a strict RSI + volume + breakout strategy for SMH this year, but reject
 - Start date, end date, initial capital, and commission controls.
 - Buy-and-hold benchmark comparison.
 - Strategy battle views with capped selection for faster experiments.
+- Intraday datasets can include premarket/postmarket candles when requested, including OHLCV data for strategies such as "premarket up X% on high volume, enter after open, exit by close."
 
 ### Market Intelligence
 

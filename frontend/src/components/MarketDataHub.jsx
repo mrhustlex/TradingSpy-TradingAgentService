@@ -49,6 +49,7 @@ const MarketDataHub = ({ files, onRefresh, onView, onDelete, onTrigger, watchedT
     const [ticker, setTicker] = useState('');
     const [period, setPeriod] = useState('max');
     const [frequency, setFrequency] = useState('1d');
+    const [extendedHours, setExtendedHours] = useState(false);
     const [loading, setLoading] = useState(false);
     const [validating, setValidating] = useState(false);
     const [watchlistTicker, setWatchlistTicker] = useState('');
@@ -68,6 +69,9 @@ const MarketDataHub = ({ files, onRefresh, onView, onDelete, onTrigger, watchedT
         if (!validPeriods.includes(period)) {
             setPeriod(validPeriods[validPeriods.length - 1]); // Set to max valid period
         }
+        if (['1d', '1wk', '1mo'].includes(frequency)) {
+            setExtendedHours(false);
+        }
     }, [frequency]);
 
     const handleDownload = async () => {
@@ -78,9 +82,10 @@ const MarketDataHub = ({ files, onRefresh, onView, onDelete, onTrigger, watchedT
             const res = await axios.post(`${DATA_SERVICE}/download`, {
                 tickers: [ticker.toUpperCase()],
                 period: period,
-                interval: frequency
+                interval: frequency,
+                extended_hours: extendedHours
             });
-            onTrigger(res.data.task_id, `Downloading ${ticker.toUpperCase()} (${frequency}, ${period})`);
+            onTrigger(res.data.task_id, `Downloading ${ticker.toUpperCase()} (${frequency}, ${period}${extendedHours ? ', extended hours' : ''})`);
             notify(`${ticker.toUpperCase()} added to watchlist & download started`, 'green');
         } catch (e) {
             alert("Error starting download");
@@ -96,9 +101,10 @@ const MarketDataHub = ({ files, onRefresh, onView, onDelete, onTrigger, watchedT
         try {
             const res = await axios.post(`${DATA_SERVICE}/download`, {
                 tickers: [SYMBOL],
-                suite: true
+                suite: true,
+                extended_hours: extendedHours
             });
-            onTrigger(res.data.task_id, `Full Suite: ${SYMBOL} (1m, 5m, 1h, 1d)`);
+            onTrigger(res.data.task_id, `Full Suite: ${SYMBOL} (1m, 5m, 1h, 1d${extendedHours ? ', extended hours' : ''})`);
             notify(`${SYMBOL} added to watchlist & full suite download started`, 'green');
         } catch (e) {
             alert("Failed to trigger suite download");
@@ -250,6 +256,15 @@ const MarketDataHub = ({ files, onRefresh, onView, onDelete, onTrigger, watchedT
                                 ))}
                             </select>
                         </div>
+                        <label className="form-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '1.55rem' }}>
+                            <input
+                                type="checkbox"
+                                checked={extendedHours}
+                                onChange={(e) => setExtendedHours(e.target.checked)}
+                                disabled={frequency === '1d' || frequency === '1wk' || frequency === '1mo'}
+                            />
+                            Extended hours
+                        </label>
                     </div>
 
                     <div style={{
@@ -262,6 +277,7 @@ const MarketDataHub = ({ files, onRefresh, onView, onDelete, onTrigger, watchedT
                         border: '1px solid rgba(59, 130, 246, 0.2)'
                     }}>
                         <strong>Selected:</strong> {getFrequencyLabel(frequency)} data for {getPeriodLabel(period)}
+                        {extendedHours && frequency !== '1d' && frequency !== '1wk' && frequency !== '1mo' ? ' including premarket/postmarket' : ''}
                         {frequency.includes('m') && (
                             <div style={{ marginTop: '0.5rem', opacity: 0.8 }}>
                                 ⚠️ Intraday data has limited historical availability due to exchange restrictions

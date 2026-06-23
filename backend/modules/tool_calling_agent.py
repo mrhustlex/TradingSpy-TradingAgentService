@@ -191,7 +191,7 @@ def _safe_symbol(symbol: str) -> str:
     return re.sub(r"[^A-Za-z0-9.^=-]", "", str(symbol or "").strip().upper().replace("$", ""))
 
 
-def _find_local_candle_file(symbol: str, interval: str, period: str = None) -> str:
+def _find_local_candle_file(symbol: str, interval: str, period: str = None, extended_hours: bool = False) -> str:
     symbol_l = symbol.lower()
     interval_l = interval.lower()
     period_l = str(period or "").lower()
@@ -206,6 +206,9 @@ def _find_local_candle_file(symbol: str, interval: str, period: str = None) -> s
             if not low.startswith(f"{symbol_l}-") and not low.startswith(f"{symbol_l}_"):
                 continue
             if f"-{interval_l}-" not in low and f"_{interval_l}_" not in low and f"-{interval_l}." not in low:
+                continue
+            is_extended_file = "-extended" in low or "_extended" in low
+            if bool(extended_hours) != is_extended_file:
                 continue
             score = 2 if period_l and period_l in low else 1
             path = os.path.join(directory, name)
@@ -1264,6 +1267,7 @@ def read_candles(
     start: str = None,
     end: str = None,
     prefer_local: bool = True,
+    extended_hours: bool = False,
 ) -> dict:
     """Read a compact slice of OHLCV candles for short-timeframe trading analysis.
 
@@ -1283,6 +1287,7 @@ def read_candles(
         start: Optional ISO date/time lower bound
         end: Optional ISO date/time upper bound
         prefer_local: Use existing local dataset when available
+        extended_hours: Include premarket/postmarket candles when downloading or reading matching local data
     """
     symbol = _safe_symbol(ticker)
     if not symbol:
@@ -1306,7 +1311,7 @@ def read_candles(
         }
 
     limit = max(1, min(int(limit or 80), 300))
-    path = _find_local_candle_file(symbol, iv, period) if prefer_local else ""
+    path = _find_local_candle_file(symbol, iv, period, extended_hours=extended_hours) if prefer_local else ""
     source = "local_dataset" if path else ""
     downloaded = False
 
@@ -1315,7 +1320,7 @@ def read_candles(
             from modules.downloader import download_ticker_data
             out_dir = _market_data_dirs()[0]
             os.makedirs(out_dir, exist_ok=True)
-            path = download_ticker_data(symbol, interval=iv, period=period, output_dir=out_dir)
+            path = download_ticker_data(symbol, interval=iv, period=period, output_dir=out_dir, extended_hours=extended_hours)
             downloaded = bool(path)
             source = "downloaded_dataset" if path else ""
         except Exception as exc:
@@ -1333,7 +1338,7 @@ def read_candles(
 
     if df.empty:
         try:
-            hist = yf.Ticker(symbol).history(period=period, interval=iv, auto_adjust=True)
+            hist = yf.Ticker(symbol).history(period=period, interval=iv, auto_adjust=True, prepost=bool(extended_hours))
             df = _history_to_ohlcv_df(hist)
             source = "live_yfinance_fallback"
         except Exception as exc:
@@ -1396,6 +1401,7 @@ def read_candles(
         "symbol": symbol,
         "interval": iv,
         "period": period,
+        "extended_hours": bool(extended_hours),
         "source": source or "unknown",
         "downloaded_now": downloaded,
         "filename": filename,
@@ -1792,7 +1798,7 @@ Keep responses concise and natural.
 - **If a tool returns an error, acknowledge it and provide alternative analysis** - Do not retry
 - **Exception: Only retry if explicitly instructed by the system or if the error is a temporary network issue**
 - **For chart tools: Call get_price_chart once, then provide analysis. Stop after that.**
-- **For short-timeframe candle questions: prefer read_candles(ticker, interval, period, limit). It reads local data or downloads the missing dataset first.**
+- **For short-timeframe candle questions: prefer read_candles(ticker, interval, period, limit). It reads local data or downloads the missing dataset first. Use extended_hours=True when the user asks about premarket/postmarket or extended-session behavior.**
 - **For data tools: Call once, analyze, respond. Do not call again unless user asks for different data.**
 
 🧠 CONVERSATION AWARENESS:
@@ -1861,9 +1867,10 @@ EXAMPLE OF CORRECT BEHAVIOR:
 When user asks for technical analysis or candlestick patterns:
 1. For short timeframe/intraday candle reads, use read_candles(ticker, interval, period, limit) directly.
 2. read_candles will use a matching local dataset when available; if missing, it downloads the dataset, then returns a compact candle slice.
-3. Use read_market_data(filename) only when the user explicitly names an exact dataset file.
-4. Analyze only the returned candles and stats. Do not invent candle values, RSI, volume ratio, support/resistance, or entry levels not supported by the data.
-5. Common short intervals: 1m, 2m, 5m, 15m, 30m, 60m/1h. Note that intraday provider history is limited.
+3. For premarket/postmarket analysis or "premarket up X%" rules, pass extended_hours=True and use intraday intervals such as 1m or 5m.
+4. Use read_market_data(filename) only when the user explicitly names an exact dataset file.
+5. Analyze only the returned candles and stats. Do not invent candle values, RSI, volume ratio, support/resistance, or entry levels not supported by the data.
+6. Common short intervals: 1m, 2m, 5m, 15m, 30m, 60m/1h. Note that intraday provider history is limited.
 
 CRITICAL RATE LIMIT RULES:
 1. Use tools to get the results that you need
@@ -1897,7 +1904,7 @@ Available tools:
 - get_earnings_dates: Get upcoming earnings dates and historical earnings
 - get_dividends: Get dividend history and yield
 - get_price_chart: Get historical OHLCV data for charting and visualization
-- read_candles: Read a compact OHLCV candle slice for short-timeframe trading; uses local dataset or downloads it if missing
+- read_candles: Read a compact OHLCV candle slice for short-timeframe trading; uses local dataset or downloads it if missing; supports extended_hours=True for premarket/postmarket candles
 
 📈 VISUALIZATION & CHARTING:
 When user asks to see price action, trends, or technical analysis visually:
@@ -1929,7 +1936,7 @@ If you need to create ASCII charts or markdown visualizations:
 - list_available_datasets: See what market data is available
 - generate_strategy: Create a new trading strategy - this is the API from the platform to use AI to generate the strategy for backtesting. You have to reply the user/do the next step until the strategy creation is finished. check this by check_task_status. Target Category could be the stock ticker - time like "AAPL-1D"
 - run_backtest: Test a strategy against historical data - this is the API from the platform to use AI to backtest the generated strategy from list/generate strategy API. You have to reply the user/do the next step until the strategy creation is finished. check this by check_task_status
-- download_market_data: Get historical data for a ticker- this is the API from the platform to use AI to backtest the generated strategy to download raw market data. You have to reply the user/do the next step until the strategy creation is finished. check this by check_task_status
+- download_market_data: Get historical data for a ticker- this is the API from the platform to use AI to backtest the generated strategy to download raw market data. Use extended_hours=True when the strategy depends on premarket/postmarket candles. You have to reply the user/do the next step until the strategy creation is finished. check this by check_task_status
 - check_task_status: Check progress of async tasks - including generate_strategy, run_backtest, download_market_data
 - ask_user_for_clarification: Ask the user for more information
 
@@ -2095,7 +2102,7 @@ WORKFLOW TOOLS:
 - list_available_datasets: See what market data is available
 - generate_strategy: Create a new trading strategy (confirm details first!)
 - run_backtest: Test a strategy against historical data (confirm strategy and data first!)
-- download_market_data: Get historical data for a ticker (confirm ticker and timeframe!)
+- download_market_data: Get historical data for a ticker (confirm ticker and timeframe; use extended_hours=True for premarket/postmarket strategies!)
 - ask_user_for_clarification: Ask the user for more information
 
 EXAMPLE CONVERSATIONS:
