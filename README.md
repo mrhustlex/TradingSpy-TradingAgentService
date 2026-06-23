@@ -185,16 +185,21 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-Model IDs:
+Current assistant model IDs:
+
+Use `trading-ai-strands` for normal integrations. It is the current recommended
+agent loop for tool-using TradingSpy assistant behavior.
 
 | Model ID | Mode | Behavior |
 | --- | --- | --- |
-| `trading-ai` | Manual | Plain assistant mode; suggests actions without tool execution |
-| `trading-ai-manual` | Manual | Same as `trading-ai` |
-| `trading-ai-agentic` | Agentic | Executes tools with streaming progress |
-| `trading-ai-strands` | Agentic loop | Iterative tool loop used by the UI default |
+| `trading-ai-strands` | Recommended agent | Current tool-using assistant loop for research, data checks, strategy work, and backtests |
+| `trading-ai` | Compatibility alias | Manual/plain assistant path; no tool execution |
+| `trading-ai-manual` | Compatibility alias | Same manual/plain assistant path as `trading-ai` |
+| `trading-ai-agentic` | Legacy agentic path | Older streaming tool path kept for compatibility |
 
-Streaming is recommended for agentic modes.
+For new OpenAI-compatible clients, use `trading-ai-strands` with `stream: true`.
+The main web UI uses the backend assistant endpoints directly and also routes
+normal assistant work through the current tool-using flow.
 
 ## Configuration
 
