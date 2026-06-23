@@ -5,9 +5,28 @@ import axios from 'axios';
 import { API_BASE, SETTINGS_URL, DATA_SERVICE, BACKTEST_SERVICE, OPTIMIZER_SERVICE } from '../config';
 import ExpandableSection from './ExpandableSection';
 
+const DEFAULT_PROVIDER = 'google_ai_studio';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
+const SUPPORTED_PROVIDERS = [
+    { value: 'google_ai_studio', label: 'Google AI Studio' },
+    { value: 'mistral', label: 'Mistral AI' },
+    { value: 'openrouter', label: 'OpenRouter' },
+];
+const SUPPORTED_PROVIDER_VALUES = new Set(SUPPORTED_PROVIDERS.map(provider => provider.value));
+const normalizeProvider = (provider) => {
+    const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
+    if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
+    return SUPPORTED_PROVIDER_VALUES.has(p) ? p : DEFAULT_PROVIDER;
+};
+const isSupportedProviderInput = (provider) => {
+    const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
+    const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    return SUPPORTED_PROVIDER_VALUES.has(normalized);
+};
+
 // Keys that live in localStorage only — never sent to the server
 const LS_KEY = (k) => `settings_${k}`;
-const KEY_FIELDS = ['openai_api_key','openrouter_api_key','groq_api_key','google_ai_studio_api_key','litellm_api_key','mistral_api_key','azure_openai_api_key','aws_access_key_id','aws_secret_access_key','tavily_api_key','gcp_api_key'];
+const KEY_FIELDS = ['openrouter_api_key','google_ai_studio_api_key','mistral_api_key','tavily_api_key'];
 
 function loadLocalKeys() {
     const out = {};
@@ -20,37 +39,18 @@ function saveLocalKeys(settings) {
 }
 
 function loadLocalProviderConfig() {
-    const keys = ['azure_openai_endpoint', 'azure_openai_api_version', 'aws_region', 'gcp_project', 'gcp_location', 'litellm_base_url'];
-    const out = {};
-    keys.forEach(k => {
-        const value = localStorage.getItem(LS_KEY(k));
-        if (value != null) out[k] = value;
-    });
-    return out;
+    return {};
 }
 
 const INITIAL_SETTINGS = {
     // keys — browser only
-    openai_api_key: '',
     openrouter_api_key: '',
-    groq_api_key: '',
     google_ai_studio_api_key: '',
-    litellm_api_key: '',
-    litellm_base_url: '',
-    azure_openai_api_key: '',
-    azure_openai_endpoint: '',
-    azure_openai_api_version: '',
-    aws_access_key_id: '',
-    aws_secret_access_key: '',
-    aws_region: '',
-    gcp_api_key: '',
-    gcp_project: '',
-    gcp_location: '',
     mistral_api_key: '',
     tavily_api_key: '',
     // non-sensitive — server
-    default_provider: 'openai',
-    default_model: 'gpt-4o',
+    default_provider: DEFAULT_PROVIDER,
+    default_model: DEFAULT_MODEL,
     enable_openai_compatible_output: true,
     enable_acp_agent_output: false,
     enable_a2a_remote_agent_output: false,
@@ -129,14 +129,19 @@ const Settings = ({ notify }) => {
                     localStorage.setItem(LS_KEY(k), res.data[k] ? 'true' : 'false');
                 });
                 // Server returns only non-sensitive config; merge with locally stored keys
+                const rawProvider = localStorage.getItem('settings_default_provider') || res.data.default_provider || DEFAULT_PROVIDER;
+                const provider = normalizeProvider(rawProvider);
+                const model = isSupportedProviderInput(rawProvider)
+                    ? (localStorage.getItem('settings_default_model') || res.data.default_model || DEFAULT_MODEL)
+                    : DEFAULT_MODEL;
                 setSettings(prev => ({ 
                     ...prev, 
                     ...res.data, 
                     ...loadLocalProviderConfig(),
                     ...loadLocalKeys(),
                     // Also load default_provider and default_model from localStorage if available
-                    default_provider: localStorage.getItem('settings_default_provider') || res.data.default_provider || 'openai',
-                    default_model: localStorage.getItem('settings_default_model') || res.data.default_model || 'gpt-4o'
+                    default_provider: provider,
+                    default_model: model
                 }));
             }
         } catch (e) {
@@ -193,35 +198,19 @@ const Settings = ({ notify }) => {
             // Also save default_provider and default_model to localStorage for frontend use
             localStorage.setItem('settings_default_provider', settings.default_provider);
             localStorage.setItem('settings_default_model', settings.default_model);
-            ['azure_openai_endpoint', 'azure_openai_api_version', 'aws_region', 'gcp_project', 'gcp_location', 'litellm_base_url'].forEach(k => {
-                localStorage.setItem(LS_KEY(k), settings[k] || '');
-            });
-
             // POST only non-sensitive fields to server. The remote agent token is
             // server-side auth config, so it is sent only when the user types one.
             const {
                 default_provider,
                 default_model,
-                azure_openai_endpoint,
-                azure_openai_api_version,
-                aws_region,
-                gcp_project,
-                gcp_location,
-                litellm_base_url,
                 enable_openai_compatible_output,
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
                 remote_agent_auth_token,
             } = settings;
             const serverPayload = {
-                default_provider,
+                default_provider: normalizeProvider(default_provider),
                 default_model,
-                azure_openai_endpoint,
-                azure_openai_api_version,
-                aws_region,
-                gcp_project,
-                gcp_location,
-                litellm_base_url,
                 enable_openai_compatible_output,
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
@@ -256,10 +245,10 @@ const Settings = ({ notify }) => {
         if (KEY_FIELDS.includes(key)) {
             localStorage.setItem(LS_KEY(key), value || '');
         }
-        if (['azure_openai_endpoint', 'azure_openai_api_version', 'aws_region', 'gcp_project', 'gcp_location', 'litellm_base_url'].includes(key)) {
-            localStorage.setItem(LS_KEY(key), value || '');
+        if (key === 'default_provider') {
+            localStorage.setItem(LS_KEY(key), normalizeProvider(value));
         }
-        if (key === 'default_provider' || key === 'default_model') {
+        if (key === 'default_model') {
             localStorage.setItem(LS_KEY(key), value || '');
         }
     };
@@ -284,15 +273,9 @@ const Settings = ({ notify }) => {
                                 value={settings.default_provider}
                                 onChange={(e) => updateSetting('default_provider', e.target.value)}
                             >
-                                <option value="openai">OpenAI</option>
-                                <option value="openrouter">OpenRouter</option>
-                                <option value="groq">Groq</option>
-                                <option value="google_ai_studio">Google AI Studio</option>
-                                <option value="litellm">LiteLLM Proxy</option>
-                                <option value="azure">Azure OpenAI</option>
-                                <option value="aws">AWS Bedrock</option>
-                                <option value="gcp">GCP Vertex AI</option>
-                                <option value="mistral">Mistral AI</option>
+                                {SUPPORTED_PROVIDERS.map(provider => (
+                                    <option key={provider.value} value={provider.value}>{provider.label}</option>
+                                ))}
                             </select>
                         </div>
                         <div className="form-group">
@@ -304,7 +287,7 @@ const Settings = ({ notify }) => {
                             </label>
                             <input
                                 className="input"
-                                placeholder="gpt-4o, claude-3-opus, etc."
+                                placeholder="gemini-2.5-flash, mistral-large-latest, openrouter model id..."
                                 value={settings.default_model}
                                 onChange={(e) => updateSetting('default_model', e.target.value)}
                             />
@@ -315,27 +298,11 @@ const Settings = ({ notify }) => {
                 {/* KEY */}
                 <ExpandableSection label="2. Key" icon={<Key size={18} />} color="var(--brand-green)" defaultOpen={true}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.25rem' }}>
-                        {settings.default_provider === 'openai' && (
-                            <div className="form-group">
-                                <label>OpenAI API Key</label>
-                                <input type="password" className="input" value={settings.openai_api_key} onChange={(e) => updateSetting('openai_api_key', e.target.value)} placeholder={settings.openai_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'sk-...'} />
-                                <ProviderKeyNote configured={settings.openai_api_key_configured} />
-                            </div>
-                        )}
-
                         {settings.default_provider === 'openrouter' && (
                             <div className="form-group">
                                 <label>OpenRouter API Key</label>
                                 <input type="password" className="input" value={settings.openrouter_api_key} onChange={(e) => updateSetting('openrouter_api_key', e.target.value)} placeholder={settings.openrouter_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'sk-or-...'} />
                                 <ProviderKeyNote configured={settings.openrouter_api_key_configured} />
-                            </div>
-                        )}
-
-                        {settings.default_provider === 'groq' && (
-                            <div className="form-group">
-                                <label>Groq API Key</label>
-                                <input type="password" className="input" value={settings.groq_api_key} onChange={(e) => updateSetting('groq_api_key', e.target.value)} placeholder={settings.groq_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'gsk_...'} />
-                                <ProviderKeyNote configured={settings.groq_api_key_configured} />
                             </div>
                         )}
 
@@ -347,34 +314,6 @@ const Settings = ({ notify }) => {
                             </div>
                         )}
 
-                        {settings.default_provider === 'litellm' && (<>
-                            <div className="form-group">
-                                <label>LiteLLM API Key</label>
-                                <input type="password" className="input" value={settings.litellm_api_key} onChange={(e) => updateSetting('litellm_api_key', e.target.value)} placeholder="sk-... or leave blank for local proxy" />
-                                <ProviderKeyNote configured={settings.litellm_api_key_configured} />
-                            </div>
-                            <div className="form-group">
-                                <label>LiteLLM Base URL</label>
-                                <input className="input" value={settings.litellm_base_url} onChange={(e) => updateSetting('litellm_base_url', e.target.value)} placeholder="http://localhost:4000" />
-                            </div>
-                        </>)}
-
-                        {settings.default_provider === 'azure' && (<>
-                            <div className="form-group">
-                                <label>Azure OpenAI API Key</label>
-                                <input type="password" className="input" value={settings.azure_openai_api_key} onChange={(e) => updateSetting('azure_openai_api_key', e.target.value)} placeholder={settings.azure_openai_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'Azure API key'} />
-                                <ProviderKeyNote configured={settings.azure_openai_api_key_configured} />
-                            </div>
-                            <div className="form-group">
-                                <label>Azure Endpoint</label>
-                                <input className="input" placeholder="https://YOUR_RESOURCE.openai.azure.com/" value={settings.azure_openai_endpoint} onChange={(e) => updateSetting('azure_openai_endpoint', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label>API Version</label>
-                                <input className="input" placeholder="2024-08-01-preview" value={settings.azure_openai_api_version} onChange={(e) => updateSetting('azure_openai_api_version', e.target.value)} />
-                            </div>
-                        </>)}
-
                         {settings.default_provider === 'mistral' && (
                             <div className="form-group">
                                 <label>Mistral AI API Key</label>
@@ -383,38 +322,6 @@ const Settings = ({ notify }) => {
                             </div>
                         )}
 
-                        {settings.default_provider === 'aws' && (<>
-                            <div className="form-group">
-                                <label>Access Key ID</label>
-                                <input className="input" value={settings.aws_access_key_id} onChange={(e) => updateSetting('aws_access_key_id', e.target.value)} />
-                                <ProviderKeyNote configured={settings.aws_access_key_id_configured} fieldLabel="AWS access key" />
-                            </div>
-                            <div className="form-group">
-                                <label>Secret Access Key</label>
-                                <input type="password" className="input" value={settings.aws_secret_access_key} onChange={(e) => updateSetting('aws_secret_access_key', e.target.value)} />
-                                <ProviderKeyNote configured={settings.aws_secret_access_key_configured} fieldLabel="AWS secret key" />
-                            </div>
-                            <div className="form-group">
-                                <label>Region</label>
-                                <input className="input" placeholder="us-east-1" value={settings.aws_region} onChange={(e) => updateSetting('aws_region', e.target.value)} />
-                            </div>
-                        </>)}
-
-                        {settings.default_provider === 'gcp' && (<>
-                            <div className="form-group">
-                                <label>GCP API Key (optional)</label>
-                                <input type="password" className="input" value={settings.gcp_api_key} onChange={(e) => updateSetting('gcp_api_key', e.target.value)} placeholder="Vertex AI normally uses ADC/service account auth" />
-                                <ProviderKeyNote configured={settings.gcp_api_key_configured} fieldLabel="GCP API key" />
-                            </div>
-                            <div className="form-group">
-                                <label>GCP Project ID</label>
-                                <input className="input" value={settings.gcp_project} onChange={(e) => updateSetting('gcp_project', e.target.value)} />
-                            </div>
-                            <div className="form-group">
-                                <label>GCP Location</label>
-                                <input className="input" placeholder="us-central1" value={settings.gcp_location} onChange={(e) => updateSetting('gcp_location', e.target.value)} />
-                            </div>
-                        </>)}
                     </div>
                 </ExpandableSection>
 
@@ -706,14 +613,9 @@ const Settings = ({ notify }) => {
                                 <button className="btn btn-ghost" onClick={() => setShowModelHelp(false)}><X size={18} /></button>
                             </div>
                             <div style={{ display: 'grid', gap: '1rem', fontSize: '0.9rem' }}>
-                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-yellow)' }}>OpenAI</strong>: <code style={{ color: 'white' }}>gpt-4o</code>, <code style={{ color: 'white' }}>gpt-4-turbo</code>, <code style={{ color: 'white' }}>gpt-3.5-turbo</code></div>
-                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-blue)' }}>OpenRouter</strong>: <code style={{ color: 'white' }}>anthropic/claude-3-5-sonnet</code>, <code style={{ color: 'white' }}>anthropic/claude-3-opus</code></div>
-                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-green)' }}>Groq</strong>: <code style={{ color: 'white' }}>llama-3.1-70b-versatile</code>, <code style={{ color: 'white' }}>mixtral-8x7b-32768</code></div>
                                 <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: '#4285F4' }}>Google AI Studio</strong>: <code style={{ color: 'white' }}>gemini-2.5-flash</code>, <code style={{ color: 'white' }}>gemini-2.0-flash</code></div>
-                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-yellow)' }}>LiteLLM</strong>: use the model names configured on your LiteLLM proxy.</div>
                                 <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-red)' }}>Mistral</strong>: <code style={{ color: 'white' }}>mistral-large-latest</code>, <code style={{ color: 'white' }}>open-mixtral-8x22b</code></div>
-                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: '#4285F4' }}>GCP Vertex AI</strong>: <code style={{ color: 'white' }}>gemini-2.0-flash</code>, <code style={{ color: 'white' }}>gemini-1.5-pro</code>, <code style={{ color: 'white' }}>gemini-1.5-flash</code></div>
-                                <div><strong style={{ color: 'var(--text-secondary)' }}>Azure / AWS</strong>: <i>Check your cloud console for the specific deployment name or endpoint ID.</i></div>
+                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-blue)' }}>OpenRouter</strong>: use the provider/model ID shown in OpenRouter, for example <code style={{ color: 'white' }}>openai/gpt-4o-mini</code>.</div>
                             </div>
                             <div style={{ marginTop: '2rem', textAlign: 'right' }}>
                                 <button className="btn btn-primary" onClick={() => setShowModelHelp(false)}>Got it</button>

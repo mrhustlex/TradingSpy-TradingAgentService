@@ -3,33 +3,37 @@
  * This ensures consistent API key retrieval across all components
  */
 
+const DEFAULT_PROVIDER = 'google_ai_studio';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
+const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter']);
+
 const normalizeProvider = (provider) => {
-    const p = (provider || 'openai').trim().toLowerCase().replace(/[-\s]/g, '_');
+    const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
     if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
-    return p;
+    return supportedProviders.has(p) ? p : DEFAULT_PROVIDER;
+};
+const isSupportedProviderInput = (provider) => {
+    const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
+    const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    return supportedProviders.has(normalized);
 };
 
 const keyMap = {
-    openai: 'settings_openai_api_key',
     openrouter: 'settings_openrouter_api_key',
-    groq: 'settings_groq_api_key',
     google_ai_studio: 'settings_google_ai_studio_api_key',
     googleaistudio: 'settings_google_ai_studio_api_key',
     gemini: 'settings_google_ai_studio_api_key',
-    litellm: 'settings_litellm_api_key',
     mistral: 'settings_mistral_api_key',
-    azure: 'settings_azure_openai_api_key',
-    aws: 'settings_aws_access_key_id',
-    gcp: 'settings_gcp_api_key',
 };
 
 export const getApiSettings = () => {
     // Get provider and model from localStorage (set by Settings component)
-    const provider = normalizeProvider(localStorage.getItem('settings_default_provider') || 'openai');
-    const model = localStorage.getItem('settings_default_model') || 'gpt-4o';
+    const rawProvider = localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER;
+    const provider = normalizeProvider(rawProvider);
+    const model = isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL;
     
-    const storedKey = localStorage.getItem(keyMap[provider] || keyMap.openai) || '';
-    const api_key = provider === 'litellm' && !storedKey ? 'not-needed' : storedKey;
+    const storedKey = localStorage.getItem(keyMap[provider] || keyMap[DEFAULT_PROVIDER]) || '';
+    const api_key = storedKey;
     
     console.log('🔑 [apiKeyHelper] getApiSettings called:', {
         provider,
@@ -44,6 +48,6 @@ export const getApiSettings = () => {
 export const getApiKey = (provider) => {
     provider = normalizeProvider(provider);
     
-    const storedKey = localStorage.getItem(keyMap[provider] || keyMap.openai) || '';
-    return provider === 'litellm' && !storedKey ? 'not-needed' : storedKey;
+    const storedKey = localStorage.getItem(keyMap[provider] || keyMap[DEFAULT_PROVIDER]) || '';
+    return storedKey;
 };

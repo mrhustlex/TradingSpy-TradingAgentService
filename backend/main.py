@@ -683,8 +683,9 @@ class ShareChatRequest(BaseModel):
 
 def normalize_agent_run_request(request: AgentRunRequest) -> AgentRunRequest:
     settings = load_system_settings()
-    provider = normalize_provider_for_model(request.provider or settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER") or "openai", request.model)
-    model = normalize_model(provider, request.model or settings.get("default_model") or os.getenv("DEFAULT_MODEL") or "gpt-4o")
+    default_provider = normalize_app_llm_provider(settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER"))
+    provider = normalize_provider_for_model(request.provider or default_provider, request.model)
+    model = normalize_model(provider, request.model or settings.get("default_model") or os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash")
     request.provider = provider
     request.model = model
     return request
@@ -706,8 +707,8 @@ class SystemSettings(BaseModel):
     gcp_project: Optional[str] = ""
     gcp_location: Optional[str] = ""
     mistral_api_key: Optional[str] = ""
-    default_provider: Optional[str] = "openai"
-    default_model: Optional[str] = "gpt-4o"
+    default_provider: Optional[str] = "google_ai_studio"
+    default_model: Optional[str] = "gemini-2.5-flash"
     enable_openai_compatible_output: Optional[bool] = True
     enable_acp_agent_output: Optional[bool] = False
     enable_a2a_remote_agent_output: Optional[bool] = False
@@ -1047,7 +1048,7 @@ def normalize_provider(provider: Optional[str]) -> str:
         "vertex_ai": "gcp",
         "google_vertex_ai": "gcp",
     }
-    return aliases.get(p, p or "openai")
+    return aliases.get(p, p or "google_ai_studio")
 
 def normalize_model(provider: str, model: Optional[str]) -> str:
     """Normalize common model aliases to provider model ids."""
@@ -1068,7 +1069,9 @@ def normalize_model(provider: str, model: Optional[str]) -> str:
         return m or "anthropic.claude-3-haiku-20240307-v1:0"
     if provider == "gcp":
         return m or "gemini-1.5-pro"
-    return m or "gpt-4o"
+    if provider == "openrouter":
+        return m or "openai/gpt-4o-mini"
+    return m or "gemini-2.5-flash"
 
 def normalize_provider_for_model(provider: Optional[str], model: Optional[str]) -> str:
     """Correct common UI/provider drift, such as Gemini models submitted as OpenAI."""
@@ -1077,6 +1080,13 @@ def normalize_provider_for_model(provider: Optional[str], model: Optional[str]) 
     if normalized == "openai" and ("gemini" in model_l or model_l.startswith("models/gemini")):
         return "google_ai_studio"
     return normalized
+
+APP_LLM_PROVIDERS = {"google_ai_studio", "mistral", "openrouter"}
+
+def normalize_app_llm_provider(provider: Optional[str]) -> str:
+    """Provider choices exposed in the product UI after validation."""
+    normalized = normalize_provider(provider)
+    return normalized if normalized in APP_LLM_PROVIDERS else "google_ai_studio"
 
 def _provider_config_value(provider_config: Optional[Dict[str, Any]], settings: Dict, key: str, env_key: str = None, default: Any = None):
     provider_config = provider_config or {}
@@ -1137,8 +1147,9 @@ def resolve_provider_credentials(provider: str, api_key: str = None, provider_co
 
 def build_langchain_chat_model(provider: str, model: str, api_key: str = None, provider_config: Optional[Dict[str, Any]] = None, temperature: float = 0):
     settings = load_system_settings()
-    provider = normalize_provider_for_model(provider or settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER", "openai"), model)
-    model = normalize_model(provider, model or settings.get("default_model") or os.getenv("DEFAULT_MODEL", "gpt-4o"))
+    default_provider = normalize_app_llm_provider(settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER"))
+    provider = normalize_provider_for_model(provider or default_provider, model)
+    model = normalize_model(provider, model or settings.get("default_model") or os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"))
     creds = resolve_provider_credentials(provider, api_key, provider_config, settings)
 
     if provider in {"openai", "openrouter", "groq", "google_ai_studio", "litellm"}:
@@ -1212,8 +1223,9 @@ async def call_llm(provider: str, model: str, system_prompt: str, user_prompt: s
     settings = load_system_settings()
     
     # Use UI-defined provider/model if not specified in request
-    provider = normalize_provider_for_model(provider or settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER", "openai"), model)
-    model = normalize_model(provider, model or settings.get("default_model") or os.getenv("DEFAULT_MODEL", "gpt-4o"))
+    default_provider = normalize_app_llm_provider(settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER"))
+    provider = normalize_provider_for_model(provider or default_provider, model)
+    model = normalize_model(provider, model or settings.get("default_model") or os.getenv("DEFAULT_MODEL", "gemini-2.5-flash"))
     creds = resolve_provider_credentials(provider, api_key, provider_config, settings)
     
     logger.info(f"LLM Call: Provider={provider}, Model={model}")
@@ -1893,8 +1905,8 @@ async def health():
 @app.get("/api/debug/agent")
 async def debug_agent():
     settings = load_system_settings()
-    provider = normalize_provider(settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER") or "openai")
-    model = normalize_model(provider, settings.get("default_model") or os.getenv("DEFAULT_MODEL") or "gpt-4o")
+    provider = normalize_app_llm_provider(settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER"))
+    model = normalize_model(provider, settings.get("default_model") or os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash")
     recent_runs = sorted(
         [_safe_agent_run(run) for run in agent_runs.values()],
         key=lambda r: r.get("created_at", ""),
@@ -6411,8 +6423,8 @@ async def chat_langgraph(request: AIChatRequest):
     
     try:
         settings = load_system_settings()
-        provider = request.provider or settings.get("default_provider") or "openai"
-        model = request.model or settings.get("default_model") or "gpt-4o"
+        provider = request.provider or normalize_app_llm_provider(settings.get("default_provider"))
+        model = request.model or settings.get("default_model") or "gemini-2.5-flash"
         
         logger.info(f"=== Tool-Calling Chat Request ===")
         logger.info(f"Provider: {provider}, Model: {model}")
@@ -6558,8 +6570,8 @@ async def chat_simple(request: AIChatRequest):
         # Process message
         result = await agent.chat(
             message=request.message,
-            provider=request.provider or "openai",
-            model=request.model or "gpt-4o",
+            provider=request.provider or normalize_app_llm_provider(load_system_settings().get("default_provider")),
+            model=request.model or "gemini-2.5-flash",
             api_key=request.api_key,
             provider_config=request.provider_config,
             history=request.history or [],
@@ -6664,6 +6676,12 @@ async def agent_confirm(confirm_id: str, body: Dict):
 async def get_settings():
     data = load_system_settings()
     visible = {k: v for k, v in data.items() if k not in SENSITIVE_SETTINGS}
+    raw_provider = visible.get("default_provider") or os.getenv("DEFAULT_PROVIDER")
+    visible["default_provider"] = normalize_app_llm_provider(raw_provider)
+    raw_provider_supported = bool(raw_provider) and normalize_provider(raw_provider) in APP_LLM_PROVIDERS
+    raw_model = visible.get("default_model") if raw_provider_supported else None
+    env_model = os.getenv("DEFAULT_MODEL") if raw_provider_supported else None
+    visible["default_model"] = raw_model or normalize_model(visible["default_provider"], env_model)
     visible["remote_agent_auth_token_configured"] = bool(_remote_agent_token(data))
     for key in KEY_FIELDS:
         env_key = key.upper()
@@ -6683,6 +6701,14 @@ async def update_settings(settings: SystemSettings):
         # Provider API keys stay in the browser and are passed per request.
         incoming = settings.dict(exclude_unset=True)
         safe = {k: v for k, v in incoming.items() if k not in KEY_FIELDS}
+        if "default_provider" in safe:
+            raw_provider = safe["default_provider"]
+            raw_supported = normalize_provider(raw_provider) in APP_LLM_PROVIDERS
+            safe["default_provider"] = normalize_app_llm_provider(raw_provider)
+            if not raw_supported:
+                safe["default_model"] = normalize_model(safe["default_provider"], None)
+        if safe.get("default_provider") and not safe.get("default_model"):
+            safe["default_model"] = normalize_model(safe["default_provider"], None)
         # Merge with existing file so we don't wipe other stored config
         existing = load_system_settings()
         existing.update(safe)
@@ -8935,8 +8961,8 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
         try:
             yield f"data: {json.dumps({'type': 'status', 'content': 'Backend received request...'})}\n\n"
             settings = load_system_settings()
-            provider = normalize_provider(request.provider or settings.get("default_provider") or "openai")
-            model = normalize_model(provider, request.model or settings.get("default_model") or "gpt-4o")
+            provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
+            model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
             
             logger.info(f"=== ReAct + Parallel Tool-Calling Chat ===")
             logger.info(f"Provider: {provider}, Model: {model}")
@@ -9460,8 +9486,8 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
         try:
             yield f"data: {json.dumps({'type': 'status', 'content': 'Backend received request...'})}\n\n"
             settings = load_system_settings()
-            provider = normalize_provider(request.provider or settings.get("default_provider") or "openai")
-            model = normalize_model(provider, request.model or settings.get("default_model") or "gpt-4o")
+            provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
+            model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
             
             logger.info(f"=== Strands Agent Loop ===")
             logger.info(f"Provider: {provider}, Model: {model}")

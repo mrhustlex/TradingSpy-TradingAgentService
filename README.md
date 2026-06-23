@@ -14,7 +14,7 @@ It is not a broker and it does not place trades. It is a local research environm
 - Generate Backtrader strategies with an agent that validates code, rejects zero-trade results, and compares against buy-and-hold or a baseline strategy.
 - See the agent work in public: data freshness, market context, candidate generation, validation failures, backtests, benchmark deltas, and stale/offline states.
 - Run local Docker services with persistent data under `backend/data/`.
-- Use multiple LLM providers: OpenAI, OpenRouter, Groq, Google AI Studio, Mistral, Azure, AWS Bedrock, and Google Vertex AI.
+- Use validated LLM providers in the app: Google AI Studio, Mistral, and OpenRouter.
 - Use the backend as an OpenAI-compatible local API for agentic trading research clients.
 
 ## Demo Prompts
@@ -91,9 +91,9 @@ cp .env.example .env
 Add at least one LLM provider key to `.env`, for example:
 
 ```bash
-OPENAI_API_KEY=sk-your-key
-DEFAULT_PROVIDER=openai
-DEFAULT_MODEL=gpt-4o
+GOOGLE_AI_STUDIO_API_KEY=your-gemini-key
+DEFAULT_PROVIDER=google_ai_studio
+DEFAULT_MODEL=gemini-2.5-flash
 ```
 
 You can also configure providers inside the app settings.
@@ -146,7 +146,7 @@ flowchart LR
     Backend --> Market["Market Intelligence<br/>yfinance + heatmaps + news"]
     Backend --> Store["Local Data<br/>TinyDB + candles + strategies"]
     Backend --> Search["SearXNG<br/>localhost:8080"]
-    Agent --> LLM["LLM Providers<br/>OpenAI / Gemini / Mistral / Groq / etc."]
+    Agent --> LLM["Validated LLM Providers<br/>Google AI Studio / Mistral / OpenRouter"]
 ```
 
 ## Data Layout
@@ -216,8 +216,8 @@ AWS_SECRET_ACCESS_KEY=
 AWS_REGION=
 GCP_PROJECT=
 GCP_LOCATION=
-DEFAULT_PROVIDER=openai
-DEFAULT_MODEL=gpt-4o
+DEFAULT_PROVIDER=google_ai_studio
+DEFAULT_MODEL=gemini-2.5-flash
 ```
 
 The Docker backend also passes `SEARXNG_URL=http://searxng:8080`.

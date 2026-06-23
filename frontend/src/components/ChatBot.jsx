@@ -11,29 +11,20 @@ const ChartViewer = lazy(() => import('./ChartViewer'));
 
 // ── localStorage helpers ──────────────────────────────────────────────────────
 const STORAGE_KEY = 'chatThreads';
+const DEFAULT_PROVIDER = 'google_ai_studio';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 const API_PROVIDERS = [
-    { value: 'openai', label: 'OpenAI' },
-    { value: 'openrouter', label: 'OpenRouter' },
-    { value: 'groq', label: 'Groq' },
     { value: 'google_ai_studio', label: 'Google AI Studio' },
-    { value: 'litellm', label: 'LiteLLM' },
     { value: 'mistral', label: 'Mistral' },
-    { value: 'azure', label: 'Azure OpenAI' },
-    { value: 'aws', label: 'AWS Bedrock' },
-    { value: 'gcp', label: 'Google Vertex AI' },
+    { value: 'openrouter', label: 'OpenRouter' },
 ];
+const API_PROVIDER_VALUES = new Set(API_PROVIDERS.map(provider => provider.value));
 const API_KEY_STORAGE = {
-    openai: 'settings_openai_api_key',
     openrouter: 'settings_openrouter_api_key',
-    groq: 'settings_groq_api_key',
     google_ai_studio: 'settings_google_ai_studio_api_key',
     googleaistudio: 'settings_google_ai_studio_api_key',
     gemini: 'settings_google_ai_studio_api_key',
-    litellm: 'settings_litellm_api_key',
     mistral: 'settings_mistral_api_key',
-    azure: 'settings_azure_openai_api_key',
-    aws: 'settings_aws_access_key_id',
-    gcp: 'settings_gcp_api_key',
 };
 const AGENT_TERMINAL_STATUSES = ['completed', 'failed', 'stopped', 'stale'];
 const isAgentTerminalStatus = (status) => AGENT_TERMINAL_STATUSES.includes(status);
@@ -93,15 +84,23 @@ const MiniChart = React.memo(function MiniChart({ symbol, bars }) {
 });
 
 const normalizeProvider = (provider) => {
-    const p = (provider || 'openai').trim().toLowerCase().replace(/[-\s]/g, '_');
+    const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
     if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
-    return p;
+    return API_PROVIDER_VALUES.has(p) ? p : DEFAULT_PROVIDER;
+};
+const isSupportedProviderInput = (provider) => {
+    const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
+    const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    return API_PROVIDER_VALUES.has(normalized);
 };
 
-const readStoredAssistantConfig = () => ({
-    provider: normalizeProvider(localStorage.getItem('settings_default_provider') || 'openai'),
-    model: localStorage.getItem('settings_default_model') || 'gpt-4o',
-});
+const readStoredAssistantConfig = () => {
+    const rawProvider = localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER;
+    return {
+        provider: normalizeProvider(rawProvider),
+        model: isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
+    };
+};
 
 const WELCOME_MSG = (id) => ({
     id: `init-${id}`,
@@ -132,13 +131,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     // Read the active API key from localStorage based on provider
     const getActiveApiKey = (provider) => {
-        // If provider not specified, try to get from aiConfig, then from localStorage, then default to openai
-        const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai');
-        const storedKey = localStorage.getItem(API_KEY_STORAGE[p] || API_KEY_STORAGE.openai) || null;
-        const serverConfigured = localStorage.getItem(`${API_KEY_STORAGE[p] || API_KEY_STORAGE.openai}_configured`) === 'true';
-        const key = p === 'litellm' && !storedKey
-            ? 'not-needed'
-            : serverConfigured && !storedKey
+        const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
+        const keyStorage = API_KEY_STORAGE[p] || API_KEY_STORAGE[DEFAULT_PROVIDER];
+        const storedKey = localStorage.getItem(keyStorage) || null;
+        const serverConfigured = localStorage.getItem(`${keyStorage}_configured`) === 'true';
+        const key = serverConfigured && !storedKey
                 ? null
                 : storedKey;
         console.log('🔑 [ChatBot] getActiveApiKey called:', {
@@ -152,42 +149,17 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         return key;
     };
     const getProviderConfig = (provider) => {
-        const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai');
+        const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
         const cfg = {};
-        if (p === 'openai') cfg.openai_api_key = localStorage.getItem('settings_openai_api_key') || '';
         if (p === 'openrouter') cfg.openrouter_api_key = localStorage.getItem('settings_openrouter_api_key') || '';
-        if (p === 'groq') cfg.groq_api_key = localStorage.getItem('settings_groq_api_key') || '';
         if (p === 'google_ai_studio') cfg.google_ai_studio_api_key = localStorage.getItem('settings_google_ai_studio_api_key') || '';
         if (p === 'mistral') cfg.mistral_api_key = localStorage.getItem('settings_mistral_api_key') || '';
-        if (p === 'litellm') {
-            cfg.litellm_api_key = localStorage.getItem('settings_litellm_api_key') || '';
-            cfg.litellm_base_url = localStorage.getItem('settings_litellm_base_url') || '';
-        }
-        if (p === 'azure') {
-            cfg.azure_openai_api_key = localStorage.getItem('settings_azure_openai_api_key') || '';
-            cfg.azure_openai_endpoint = localStorage.getItem('settings_azure_openai_endpoint') || '';
-            cfg.azure_openai_api_version = localStorage.getItem('settings_azure_openai_api_version') || '';
-        }
-        if (p === 'aws') {
-            cfg.aws_access_key_id = localStorage.getItem('settings_aws_access_key_id') || '';
-            cfg.aws_secret_access_key = localStorage.getItem('settings_aws_secret_access_key') || '';
-            cfg.aws_region = localStorage.getItem('settings_aws_region') || '';
-        }
-        if (p === 'gcp') {
-            cfg.gcp_api_key = localStorage.getItem('settings_gcp_api_key') || '';
-            cfg.gcp_project = localStorage.getItem('settings_gcp_project') || '';
-            cfg.gcp_location = localStorage.getItem('settings_gcp_location') || '';
-        }
         return Object.fromEntries(Object.entries(cfg).filter(([, value]) => value !== ''));
     };
     const hasConfiguredApiKey = (provider) => {
-        const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai');
-        if (p === 'litellm') return true;
-        const keyStorage = API_KEY_STORAGE[p] || API_KEY_STORAGE.openai;
+        const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
+        const keyStorage = API_KEY_STORAGE[p] || API_KEY_STORAGE[DEFAULT_PROVIDER];
         const serverConfigured = localStorage.getItem(`${keyStorage}_configured`) === 'true';
-        if (p === 'azure') return Boolean((localStorage.getItem('settings_azure_openai_api_key') || serverConfigured) && localStorage.getItem('settings_azure_openai_endpoint'));
-        if (p === 'aws') return Boolean((localStorage.getItem('settings_aws_access_key_id') || localStorage.getItem('settings_aws_access_key_id_configured') === 'true') && (localStorage.getItem('settings_aws_secret_access_key') || localStorage.getItem('settings_aws_secret_access_key_configured') === 'true'));
-        if (p === 'gcp') return Boolean(localStorage.getItem('settings_gcp_project') || localStorage.getItem('settings_gcp_api_key') || serverConfigured);
         return Boolean(localStorage.getItem(keyStorage) || serverConfigured);
     };
     const [responseLength, setResponseLength] = useState(localStorage.getItem('response_length') || 'mid');
@@ -246,11 +218,12 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const [agentConnectionIssue, setAgentConnectionIssue] = useState('');
     const [expandedAgentLogs, setExpandedAgentLogs] = useState({});
     const [apiDraft, setApiDraft] = useState(() => {
-        const provider = normalizeProvider(localStorage.getItem('settings_default_provider') || 'openai');
+        const rawProvider = localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER;
+        const provider = normalizeProvider(rawProvider);
         return {
             provider,
-            model: localStorage.getItem('settings_default_model') || 'gpt-4o',
-            apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE.openai) || '',
+            model: isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
+            apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
         };
     });
     
@@ -321,9 +294,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                         localStorage.setItem(`settings_${key}`, value ? 'true' : 'false');
                     }
                 });
+                const rawProvider = localStorage.getItem('settings_default_provider') || res.data.default_provider || DEFAULT_PROVIDER;
                 setAiConfig({
-                    provider: normalizeProvider(localStorage.getItem('settings_default_provider') || res.data.default_provider || 'openai'),
-                    model: localStorage.getItem('settings_default_model') || res.data.default_model || 'gpt-4o',
+                    provider: normalizeProvider(rawProvider),
+                    model: isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || res.data.default_model || DEFAULT_MODEL) : DEFAULT_MODEL,
                 });
             }
         }).catch(() => {});
@@ -341,11 +315,12 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     useEffect(() => {
         if (!apiPanelOpen) return;
-        const provider = normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai');
+        const rawProvider = aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER;
+        const provider = normalizeProvider(rawProvider);
         setApiDraft({
             provider,
-            model: aiConfig.model || localStorage.getItem('settings_default_model') || 'gpt-4o',
-            apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE.openai) || '',
+            model: isSupportedProviderInput(rawProvider) ? (aiConfig.model || localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
+            apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
         });
     }, [apiPanelOpen, aiConfig.provider, aiConfig.model]);
 
@@ -399,11 +374,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     }, []);
 
     const saveAssistantApi = async () => {
-        const provider = normalizeProvider(apiDraft.provider || 'openai');
-        const model = apiDraft.model?.trim() || 'gpt-4o';
+        const provider = normalizeProvider(apiDraft.provider || DEFAULT_PROVIDER);
+        const model = apiDraft.model?.trim() || DEFAULT_MODEL;
         localStorage.setItem('settings_default_provider', provider);
         localStorage.setItem('settings_default_model', model);
-        const keyStorage = API_KEY_STORAGE[provider] || API_KEY_STORAGE.openai;
+        const keyStorage = API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER];
         if (apiDraft.apiKey?.trim()) {
             localStorage.setItem(keyStorage, apiDraft.apiKey.trim());
         }
@@ -1262,7 +1237,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     const classifyIntentWithLLM = async (message, threadId) => {
         const fallbackIntent = analyzeIntent(message);
-        const activeProvider = normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai');
+        const activeProvider = normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
         const activeKey = getActiveApiKey(activeProvider);
         const providerConfig = getProviderConfig(activeProvider);
         const thread = threadState.threads.find(t => t.id === threadId);
@@ -1273,7 +1248,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             const res = await axios.post(`${API_BASE}/agent/intent`, {
                 message,
                 provider: activeProvider,
-                model: aiConfig.model || localStorage.getItem('settings_default_model') || 'gpt-4o',
+                model: aiConfig.model || localStorage.getItem('settings_default_model') || DEFAULT_MODEL,
                 api_key: activeKey,
                 provider_config: providerConfig,
                 available_files: files,
@@ -1413,7 +1388,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
         try {
             const activeKey = getActiveApiKey(aiConfig.provider);
-            const activeProvider = normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai');
+            const activeProvider = normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
             if (!activeKey && !hasConfiguredApiKey(activeProvider)) {
                 addMessage(threadId, 'bot', '⚠️ No API key configured. Go to **LLM Settings** in the sidebar to add your API key before using the Assistant.');
                 updateThreadStreamState(threadId, { isStreaming: false, streamingMessage: '' });
@@ -1430,7 +1405,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             const payload = {
                 message: enrichedPrompt, intent,
                 provider: activeProvider,
-                model: aiConfig.model || localStorage.getItem('settings_default_model') || 'gpt-4o',
+                model: aiConfig.model || localStorage.getItem('settings_default_model') || DEFAULT_MODEL,
                 api_key: activeKey,
                 provider_config: getProviderConfig(activeProvider),
                 available_files: files,
@@ -3717,7 +3692,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.76rem', fontWeight: 700 }}>
                                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: hasConfiguredApiKey(aiConfig.provider) ? 'var(--brand-green)' : 'var(--brand-red)', flexShrink: 0 }} />
                                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || 'openai')} · {(aiConfig.model || localStorage.getItem('settings_default_model') || 'gpt-4o')}
+                                    {normalizeProvider(aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER)} · {(aiConfig.model || localStorage.getItem('settings_default_model') || DEFAULT_MODEL)}
                                 </span>
                             </div>
                         </button>
@@ -4069,7 +4044,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 setApiDraft(prev => ({
                                     ...prev,
                                     provider,
-                                    apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE.openai) || '',
+                                    apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
                                 }));
                             }}
                             style={{ width: '100%', marginBottom: '0.8rem' }}
@@ -4083,7 +4058,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                             className="input"
                             value={apiDraft.model}
                             onChange={(e) => setApiDraft(prev => ({ ...prev, model: e.target.value }))}
-                            placeholder="gpt-4o"
+                            placeholder={DEFAULT_MODEL}
                             style={{ width: '100%', marginBottom: '0.8rem' }}
                         />
                         <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '0.4rem' }}>API key</label>
@@ -4094,11 +4069,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 value={apiDraft.apiKey}
                                 onChange={(e) => setApiDraft(prev => ({ ...prev, apiKey: e.target.value }))}
                                 placeholder={
-                                    apiDraft.provider === 'litellm'
-                                        ? 'Optional for local LiteLLM proxy'
-                                        : localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE.openai}_configured`) === 'true'
-                                            ? 'Server/environment key available'
-                                            : 'Enter a browser-local key'
+                                    localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE[DEFAULT_PROVIDER]}_configured`) === 'true'
+                                        ? 'Server/environment key available'
+                                        : 'Enter a browser-local key'
                                 }
                                 style={{ flex: 1 }}
                             />
@@ -4107,7 +4080,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                             </button>
                         </div>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: '0.45rem 0 1rem', lineHeight: 1.5 }}>
-                            {localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE.openai}_configured`) === 'true'
+                            {localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE[DEFAULT_PROVIDER]}_configured`) === 'true'
                                 ? 'A server/environment key is configured but hidden. Leave this blank to use it, or type a browser-local override.'
                                 : 'Saved in this browser only. It is not shown again on other browsers or devices.'}
                         </div>

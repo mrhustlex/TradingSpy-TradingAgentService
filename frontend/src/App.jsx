@@ -48,6 +48,16 @@ import Settings from './components/Settings';
 import { API_BASE, DATA_SERVICE, BACKTEST_SERVICE, SETTINGS_URL } from './config';
 
 const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'stale']);
+const normalizeSupportedProvider = (provider) => {
+  const p = (provider || 'google_ai_studio').trim().toLowerCase().replace(/[-\s]/g, '_');
+  if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
+  return ['google_ai_studio', 'mistral', 'openrouter'].includes(p) ? p : 'google_ai_studio';
+};
+const isSupportedProviderInput = (provider) => {
+  const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
+  const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+  return ['google_ai_studio', 'mistral', 'openrouter'].includes(normalized);
+};
 const isAgentTerminal = (status) => AGENT_TERMINAL_STATUSES.has(status);
 const formatAgentElapsed = (seconds) => {
   const total = Math.max(0, Number(seconds || 0));
@@ -270,8 +280,8 @@ const App = () => {
       .then(res => {
         const provider = res.data?.default_provider;
         const model = res.data?.default_model;
-        if (provider) localStorage.setItem('settings_default_provider', provider);
-        if (model) localStorage.setItem('settings_default_model', model);
+        localStorage.setItem('settings_default_provider', normalizeSupportedProvider(provider));
+        localStorage.setItem('settings_default_model', isSupportedProviderInput(provider) && model ? model : 'gemini-2.5-flash');
       })
       .catch(() => {});
   }, []);

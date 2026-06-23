@@ -1,4 +1,4 @@
 {
-  "default_provider": "openai",
-  "default_model": "gpt-4o"
+  "default_provider": "google_ai_studio",
+  "default_model": "gemini-2.5-flash"
 }
