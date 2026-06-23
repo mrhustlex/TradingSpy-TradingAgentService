@@ -71,7 +71,6 @@ Generate a strict RSI + volume + breakout strategy for SMH this year, but reject
 - Persistent local data in `backend/data/`.
 - Docker Compose setup for backend, frontend, and SearXNG.
 - OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints.
-- CLI and Telegram bot folders for extension points.
 
 ## Quick Start
 
