@@ -246,10 +246,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const { isStreaming, streamingMessage, agentProgress, confirmRequest, queuedInput, pendingAgentRequest, liveCommentary, currentStreamingId } = currentThreadStreaming;
     const isAssistantBusy = isStreaming || !!currentStreamingId || !!pendingAgentRequest;
     const mainInputPlaceholder = useMemo(() => {
-        if (queuedInput) return `Queued: "${queuedInput.slice(0, 30)}${queuedInput.length > 30 ? '...' : ''}"`;
         if (isAssistantBusy) return 'Type your next message; it will queue while the assistant is working...';
         return 'Ask about markets, generate strategies, run backtests, download data...';
-    }, [isAssistantBusy, queuedInput]);
+    }, [isAssistantBusy]);
     const chatTokenUsage = useMemo(() => {
         const usage = { input: 0, output: 0 };
         (activeThread?.messages || []).forEach(message => {
@@ -466,9 +465,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         const l = (message || '').toLowerCase();
         const end = new Date();
         const toIso = (date) => date.toISOString().slice(0, 10);
+        const minuteMatch = l.match(/\b(1|2|5|15|30|60|90)\s*(?:m|min|mins|minute|minutes)\b/);
         const hasDaily = /\b(daily|1d|day|swing)\b/.test(l);
         const hasHourly = /\b(1h|hourly|hour|4h)\b/.test(l);
         const hasWeekly = /\b(weekly|1w|week)\b/.test(l);
+        const hasExtendedHours = /\b(extended[-\s]?hours?|premarket|pre[-\s]?market|postmarket|post[-\s]?market|after[-\s]?hours?)\b/.test(l);
         const monthsAgo = (months) => {
             const date = new Date(end);
             date.setMonth(date.getMonth() - months);
@@ -479,8 +480,12 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             date.setFullYear(date.getFullYear() - years);
             return date;
         };
+        if (minuteMatch) {
+            const interval = `${minuteMatch[1]}m`;
+            return { period: interval === '1m' ? '5d' : '60d', interval, start_date: null, end_date: null, extended_hours: hasExtendedHours };
+        }
         if (/\b(this year|year to date|ytd|current year|2026)\b/.test(l)) {
-            return { period: 'ytd', interval: hasHourly ? '1h' : hasWeekly ? '1wk' : '1d', start_date: `${end.getFullYear()}-01-01`, end_date: toIso(end) };
+            return { period: 'ytd', interval: hasHourly ? '1h' : hasWeekly ? '1wk' : '1d', start_date: `${end.getFullYear()}-01-01`, end_date: toIso(end), extended_hours: hasExtendedHours && hasHourly };
         }
         if (l.includes('half year') || l.includes('half-year') || l.includes('6 month') || l.includes('six month')) {
             return { period: '6mo', start_date: toIso(monthsAgo(6)), end_date: toIso(end) };
@@ -492,20 +497,21 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             return { period: '1y', start_date: toIso(yearsAgo(1)), end_date: toIso(end) };
         }
         if (hasHourly) {
-            return { period: '6mo', interval: '1h', start_date: null, end_date: null };
+            return { period: '6mo', interval: '1h', start_date: null, end_date: null, extended_hours: hasExtendedHours };
         }
         if (hasWeekly) {
-            return { period: '5y', interval: '1wk', start_date: null, end_date: null };
+            return { period: '5y', interval: '1wk', start_date: null, end_date: null, extended_hours: false };
         }
         if (hasDaily) {
-            return { period: '5y', interval: '1d', start_date: null, end_date: null };
+            return { period: '5y', interval: '1d', start_date: null, end_date: null, extended_hours: false };
         }
-        return { period: '5y', interval: '1d', start_date: null, end_date: null };
+        return { period: '5y', interval: '1d', start_date: null, end_date: null, extended_hours: false };
     };
 
     const hasExplicitRunWindow = (message) => {
         const l = (message || '').toLowerCase();
-        return /\b(this year|year to date|ytd|current year|2026|1d|daily|day|swing|1h|hourly|hour|4h|weekly|1w|week|3mo|6mo|1y|5y|month|monthly)\b/.test(l);
+        return /\b(this year|year to date|ytd|current year|2026|1d|daily|day|swing|1h|hourly|hour|4h|weekly|1w|week|3mo|6mo|1y|5y|month|monthly|extended[-\s]?hours?|premarket|pre[-\s]?market|postmarket|post[-\s]?market|after[-\s]?hours?)\b/.test(l)
+            || /\b(?:1|2|5|15|30|60|90)\s*(?:m|min|mins|minute|minutes)\b/.test(l);
     };
 
     const needsStrategyClarification = (message) => {
@@ -573,7 +579,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 ticker: ticker || null,
                 prompt: overrides.prompt || input || `Run ${workflow.replace('_', ' ')}${ticker ? ` for ${ticker}` : ''}`,
                 period: overrides.period || inferredWindow.period,
-                interval: overrides.interval || '1d',
+                interval: overrides.interval || inferredWindow.interval || '1d',
+                extended_hours: overrides.extended_hours ?? inferredWindow.extended_hours ?? false,
                 ...battleParams,
                 start_date: battleParams.start_date || overrides.start_date || inferredWindow.start_date,
                 end_date: battleParams.end_date || overrides.end_date || inferredWindow.end_date,
@@ -1606,9 +1613,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         }
     };
 
-    // fire queued message once streaming ends for active thread
+    // fire queued message once the assistant is fully idle for the active thread
     useEffect(() => {
-        if (!isStreaming && queuedInput) {
+        if (!isAssistantBusy && queuedInput) {
             const msg = queuedInput;
             updateThreadStreamState(activeThread.id, { queuedInput: null });
             setInput('');
@@ -1618,7 +1625,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             }, 50);
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, queuedInput, activeThread.id]);
+    }, [isAssistantBusy, queuedInput, activeThread.id]);
 
     // ── stream a generation task and update a message bubble live ─────────────
     const streamGenerationTask = async (tid, msgId, taskId, stratLabel) => {
@@ -1936,7 +1943,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 );
                 return;
             }
-            if (workflowNeedsTicker && needsStrategyClarification(userMsg)) {
+            const shouldAskStrategyClarification = intentDecision.needs_clarification === true ||
+                (intentDecision.fallback && needsStrategyClarification(userMsg));
+            if (workflowNeedsTicker && shouldAskStrategyClarification) {
                 updateThreadStreamState(tid, {
                     pendingAgentRequest: {
                         workflow,
@@ -4004,6 +4013,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
                 {/* input bar */}
                 <div style={{ padding: '0.85rem 1.5rem', borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+                    {queuedInput && (
+                        <div style={{ marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                            Queued: "{queuedInput.slice(0, 80)}{queuedInput.length > 80 ? '...' : ''}"
+                        </div>
+                    )}
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
                         <textarea className="input chat-main-input" style={{ flex: 1, minHeight: '46px', maxHeight: '120px', resize: 'vertical' }}
                             placeholder={mainInputPlaceholder}

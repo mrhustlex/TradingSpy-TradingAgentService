@@ -636,6 +636,7 @@ class AgentRunRequest(BaseModel):
     dataset_filename: Optional[str] = None
     period: Optional[str] = "5y"
     interval: Optional[str] = "1d"
+    extended_hours: Optional[bool] = False
     candidate_count: Optional[int] = 3
     max_backtest_workers: Optional[int] = 4
     max_rounds: Optional[int] = 30
@@ -2482,7 +2483,7 @@ def _extract_ticker_from_text(text: str) -> str:
     return ""
 
 
-def _find_best_dataset_for_ticker(user_id: str, ticker: str, interval: str = "1d") -> Optional[str]:
+def _find_best_dataset_for_ticker(user_id: str, ticker: str, interval: str = "1d", extended_hours: bool = False) -> Optional[str]:
     _, _, user_dir = get_user_dirs(user_id)
     ticker = (ticker or "").upper()
     candidates = [
@@ -2493,6 +2494,14 @@ def _find_best_dataset_for_ticker(user_id: str, ticker: str, interval: str = "1d
         preferred = [f for f in candidates if f"-{interval}-" in f.lower()]
         if preferred:
             candidates = preferred
+    if extended_hours:
+        preferred = [f for f in candidates if "-extended" in f.lower() or "_extended" in f.lower()]
+        if preferred:
+            candidates = preferred
+    else:
+        regular = [f for f in candidates if "-extended" not in f.lower() and "_extended" not in f.lower()]
+        if regular:
+            candidates = regular
     if not candidates:
         return None
     candidates.sort(key=lambda f: (get_dataset_meta_from_path(os.path.join(user_dir, f)).get("end") or "", f), reverse=True)
@@ -2644,19 +2653,32 @@ def _agent_plan_for_request(request: AgentRunRequest) -> List[Dict[str, Any]]:
 def _infer_agent_window_from_prompt(prompt: str) -> Dict[str, Optional[str]]:
     text = (prompt or "").lower()
     end = datetime.now()
+    extended_hours = bool(re.search(r"\b(extended[-\s]?hours?|premarket|pre[-\s]?market|postmarket|post[-\s]?market|after[-\s]?hours?)\b", text))
+    minute_match = re.search(r"\b(1|2|5|15|30|60|90)\s*(?:m|min|mins|minute|minutes)\b", text)
 
     def fmt(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%d")
 
+    if minute_match:
+        interval = f"{minute_match.group(1)}m"
+        return {
+            "period": "5d" if interval == "1m" else "60d",
+            "interval": interval,
+            "extended_hours": extended_hours,
+            "start_date": None,
+            "end_date": None,
+        }
     if any(term in text for term in ["this year", "year to date", "ytd", "current year", str(end.year)]):
-        return {"period": "ytd", "start_date": f"{end.year}-01-01", "end_date": fmt(end)}
+        return {"period": "ytd", "interval": None, "extended_hours": extended_hours, "start_date": f"{end.year}-01-01", "end_date": fmt(end)}
     if any(term in text for term in ["half year", "half-year", "6 month", "six month"]):
-        return {"period": "6mo", "start_date": fmt(end - timedelta(days=183)), "end_date": fmt(end)}
+        return {"period": "6mo", "interval": None, "extended_hours": extended_hours, "start_date": fmt(end - timedelta(days=183)), "end_date": fmt(end)}
     if any(term in text for term in ["recent quarter", "3 month", "three month"]):
-        return {"period": "3mo", "start_date": fmt(end - timedelta(days=92)), "end_date": fmt(end)}
+        return {"period": "3mo", "interval": None, "extended_hours": extended_hours, "start_date": fmt(end - timedelta(days=92)), "end_date": fmt(end)}
     if any(term in text for term in ["last year", "1 year", "one year"]):
-        return {"period": "1y", "start_date": fmt(end - timedelta(days=365)), "end_date": fmt(end)}
-    return {"period": None, "start_date": None, "end_date": None}
+        return {"period": "1y", "interval": None, "extended_hours": extended_hours, "start_date": fmt(end - timedelta(days=365)), "end_date": fmt(end)}
+    if re.search(r"\b(1h|hourly|hour)\b", text):
+        return {"period": "6mo", "interval": "1h", "extended_hours": extended_hours, "start_date": None, "end_date": None}
+    return {"period": None, "interval": None, "extended_hours": extended_hours, "start_date": None, "end_date": None}
 
 
 def _infer_agent_candidate_count_from_prompt(prompt: str) -> Optional[int]:
@@ -3399,6 +3421,10 @@ async def agent_run_task(run_id: str, request: AgentRunRequest):
         inferred_window = _infer_agent_window_from_prompt(request.prompt or "")
         if inferred_window.get("period") and (not request.period or request.period == "5y"):
             request.period = inferred_window["period"]
+        if inferred_window.get("interval") and (not request.interval or request.interval == "1d"):
+            request.interval = inferred_window["interval"]
+        if inferred_window.get("extended_hours"):
+            request.extended_hours = True
         if inferred_window.get("start_date") and not request.start_date:
             request.start_date = inferred_window["start_date"]
         if inferred_window.get("end_date") and not request.end_date:
@@ -3426,7 +3452,7 @@ async def agent_run_task(run_id: str, request: AgentRunRequest):
         ticker = (request.ticker or _ticker_from_dataset(request.dataset_filename or "") or _extract_ticker_from_text(request.prompt or "")).upper()
         dataset_filename = request.dataset_filename
         if not dataset_filename and ticker:
-            dataset_filename = _find_best_dataset_for_ticker(user_id, ticker, request.interval or "1d")
+            dataset_filename = _find_best_dataset_for_ticker(user_id, ticker, request.interval or "1d", bool(request.extended_hours))
 
         if not ticker and dataset_filename:
             ticker = _ticker_from_dataset(dataset_filename)
@@ -3508,13 +3534,20 @@ async def agent_run_task(run_id: str, request: AgentRunRequest):
             _set_agent_plan_step(run_id, "data_sync", "running", f"Downloading fresh data for {ticker}")
             _update_agent_run(run_id, progress=25, current_step=f"Downloading fresh data for {ticker}")
             await _flush_agent_updates()
-            _append_agent_event(run_id, "download", f"Downloading {ticker} {request.interval}/{request.period}")
+            extended_note = " with extended hours" if request.extended_hours else ""
+            _append_agent_event(run_id, "download", f"Downloading {ticker} {request.interval}/{request.period}{extended_note}")
             loop = asyncio.get_event_loop()
             await _flush_agent_updates()
             _, _, user_dir = get_user_dirs(user_id)
             downloaded_path = await loop.run_in_executor(
                 None,
-                lambda: download_ticker_data(ticker, interval=request.interval or "1d", period=request.period or "5y", output_dir=user_dir)
+                lambda: download_ticker_data(
+                    ticker,
+                    interval=request.interval or "1d",
+                    period=request.period or "5y",
+                    output_dir=user_dir,
+                    extended_hours=bool(request.extended_hours),
+                )
             )
             if not downloaded_path:
                 raise RuntimeError(f"Download failed for {ticker}")
@@ -4260,6 +4293,8 @@ Rules:
 - If pending_agent_request is present, decide whether the new message is actually a clarification/answer for that pending request.
 - A short ticker, timeframe, "defaults", or "custom" can continue a pending request.
 - A full new question/request, especially market/news/heatmap/overview analysis, should set continues_pending=false and classify the new request on its own.
+- Set needs_clarification=true only when required execution details are genuinely missing. Do not ask for timeframe when the user already gave one as 1m, 5m, 15m, 30m, 1h, daily, weekly, or as premarket/postmarket/extended-hours intraday logic.
+- A request like "Generate a QQQ strategy using 5m extended-hours data: if premarket is up 2% on high volume, enter after open and exit before close" is a complete strategy_generate request: workflow=strategy_create, should_start_agent=true, ticker=QQQ, needs_clarification=false.
 
 JSON shape:
 {"intent":"...", "workflow":null|"strategy_create"|"strategy_race"|"market_review"|"fundamental_screener", "should_start_agent":true|false, "ticker":null|string, "strategy_name":null|string, "needs_clarification":false, "continues_pending":false, "confidence":0.0, "reason":"short user-visible reason"}"""
