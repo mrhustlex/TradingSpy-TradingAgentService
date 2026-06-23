@@ -1881,7 +1881,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 addMessage(tid, 'bot', 'Please reply `defaults` to use the agent defaults, or `custom` to use the sidebar Battle Parameters.');
                 return;
             }
-            const shouldContinuePending = intentDecision.continues_pending === true || (intentDecision.fallback && isShortPendingClarificationFallback(userMsg));
+            const shouldContinuePending = intentDecision.continues_pending === true || isShortPendingClarificationFallback(userMsg);
             if (!shouldContinuePending) {
                 updateThreadStreamState(tid, { pendingAgentRequest: null });
             } else {
@@ -1943,8 +1943,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 );
                 return;
             }
-            const shouldAskStrategyClarification = intentDecision.needs_clarification === true ||
-                (intentDecision.fallback && needsStrategyClarification(userMsg));
+            const hasRunWindow = hasExplicitRunWindow(userMsg);
+            const shouldAskStrategyClarification = intentDecision.needs_clarification === true
+                ? !hasRunWindow
+                : Boolean(intentDecision.fallback && needsStrategyClarification(userMsg));
             if (workflowNeedsTicker && shouldAskStrategyClarification) {
                 updateThreadStreamState(tid, {
                     pendingAgentRequest: {
