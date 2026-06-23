@@ -1,0 +1,74 @@
+# SearXNG Configuration - Lightweight setup for trading AI
+use_default_settings: true
+
+general:
+  instance_name: "TradingSpy Search"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "tradingspy-searxng-secret-key-change-in-production"
+  limiter: false
+  image_proxy: true
+  method: "GET"
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+  theme_args:
+    simple_style: dark
+
+# Enable only fast, reliable engines for financial/news search
+engines:
+  - name: wikidata
+    engine: wikidata
+    shortcut: wd
+    disabled: true
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+    
+  - name: google
+    engine: google
+    shortcut: go
+    disabled: false
+    
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false
+    
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+    
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+    
+  - name: reddit
+    engine: reddit
+    shortcut: re
+    disabled: false
+
+# Disable slow/unnecessary engines
+  - name: youtube
+    disabled: true
+  - name: twitter
+    disabled: true
+  - name: github
+    disabled: true

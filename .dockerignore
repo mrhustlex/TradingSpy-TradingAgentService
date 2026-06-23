@@ -1,0 +1,70 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Node/Frontend
+node_modules
+npm-debug.log
+yarn-error.log
+.next
+dist
+build
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+*.md
+docs/
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.travis.yml
+
+# Docker
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+.env
+.env*
+.env.example
+.env.local
+.env.*.local
+*.log
+.cache/
+backend/data/
+debug_test/
