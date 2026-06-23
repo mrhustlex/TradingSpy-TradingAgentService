@@ -272,6 +272,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const currentThreadStreaming = getThreadState(activeThread.id);
     const { isStreaming, streamingMessage, agentProgress, confirmRequest, queuedInput, pendingAgentRequest, liveCommentary, currentStreamingId } = currentThreadStreaming;
     const isAssistantBusy = isStreaming || !!currentStreamingId || !!pendingAgentRequest;
+    const mainInputPlaceholder = useMemo(() => {
+        if (queuedInput) return `Queued: "${queuedInput.slice(0, 30)}${queuedInput.length > 30 ? '...' : ''}"`;
+        if (isAssistantBusy) return 'Type your next message; it will queue while the assistant is working...';
+        return 'Ask about markets, generate strategies, run backtests, download data...';
+    }, [isAssistantBusy, queuedInput]);
     const chatTokenUsage = useMemo(() => {
         const usage = { input: 0, output: 0 };
         (activeThread?.messages || []).forEach(message => {
@@ -1628,9 +1633,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     // fire queued message once streaming ends for active thread
     useEffect(() => {
-        const ts = getThreadState(activeThread.id);
-        if (!ts.isStreaming && ts.queuedInput) {
-            const msg = ts.queuedInput;
+        if (!isStreaming && queuedInput) {
+            const msg = queuedInput;
             updateThreadStreamState(activeThread.id, { queuedInput: null });
             setInput('');
             // small delay so state settles
@@ -1639,7 +1643,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             }, 50);
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [threadStreamingState, activeThread.id]);
+    }, [isStreaming, queuedInput, activeThread.id]);
 
     // ── stream a generation task and update a message bubble live ─────────────
     const streamGenerationTask = async (tid, msgId, taskId, stratLabel) => {
@@ -1841,7 +1845,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     };
 
     const submitUserMessage = async (rawMessage, { clearInput = true } = {}) => {
-        if (!rawMessage?.trim() || isLoading) return;
+        if (!rawMessage?.trim()) return;
         const userMsg = rawMessage.trim();
         setInputHistoryIndex(null);
         setInputHistoryDraft('');
@@ -4026,8 +4030,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 {/* input bar */}
                 <div style={{ padding: '0.85rem 1.5rem', borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
-                        <textarea className="input" style={{ flex: 1, minHeight: '46px', maxHeight: '120px', resize: 'vertical' }}
-                            placeholder={isAssistantBusy ? (queuedInput ? `Queued: "${queuedInput.slice(0, 30)}..."` : "Type your next message; it will queue while the assistant is working...") : "Ask about markets, generate strategies, run backtests, download data..."}
+                        <textarea className="input chat-main-input" style={{ flex: 1, minHeight: '46px', maxHeight: '120px', resize: 'vertical' }}
+                            placeholder={mainInputPlaceholder}
                             value={input}
                             onChange={e => {
                                 setInput(e.target.value);
@@ -4035,12 +4039,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 setInputHistoryDraft('');
                             }}
                             onKeyDown={handleMainInputKeyDown}
-                            disabled={isLoading}
                         />
                         <button className="btn btn-primary" onClick={handleSend}
-                            disabled={isLoading || !input.trim()}
+                            disabled={!input.trim()}
                             style={{ height: '46px', minWidth: '80px' }}>
-                            {isLoading ? <RefreshCw className="animate-spin" size={17} /> : isStreaming ? <><Send size={17} /> Queue</> : <><Send size={17} /> Send</>}
+                            {isAssistantBusy ? <><Send size={17} /> Queue</> : <><Send size={17} /> Send</>}
                         </button>
                     </div>
                 </div>

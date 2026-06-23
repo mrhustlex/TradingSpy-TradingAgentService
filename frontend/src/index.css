@@ -280,6 +280,14 @@ body {
   background-color: rgba(59, 130, 246, 0.05);
 }
 
+.chat-main-input {
+  flex: 1 1 0;
+  min-height: 46px;
+  max-height: 120px;
+  resize: vertical;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
 .btn {
   padding: 0.75rem 1.5rem;
   border-radius: 8px;
