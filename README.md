@@ -298,7 +298,7 @@ Open an issue with:
 
 ## License
 
-License not declared yet. Add a `LICENSE` file before publishing broadly.
+TradingSpy is licensed under the PolyForm Noncommercial License 1.0.0. Non-commercial use is allowed; commercial use requires separate permission from the copyright holder. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
