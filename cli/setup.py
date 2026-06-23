@@ -18,7 +18,7 @@ setup(
     description="Command-line interface for TradingSpy Strands agent",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/mrhustlex/tradingAI-service",
+    url="https://github.com/mrhustlex/TradingSpy",
     packages=find_packages(where="."),
     py_modules=["cli"],
     classifiers=[

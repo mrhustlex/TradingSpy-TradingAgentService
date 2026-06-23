@@ -78,8 +78,8 @@ Generate a strict RSI + volume + breakout strategy for SMH this year, but reject
 ### 1. Clone
 
 ```bash
-git clone https://github.com/your-org/tradingspy.git
-cd tradingspy
+git clone https://github.com/mrhustlex/TradingSpy.git
+cd TradingSpy
 ```
 
 ### 2. Configure
