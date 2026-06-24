@@ -123,9 +123,15 @@ Backend:
 
 ```bash
 cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+Use Python 3.11 for local backend development. The Docker image uses Python
+3.11, and the pinned data-science dependencies are not reliable with Python
+3.13.
 
 Frontend:
 
