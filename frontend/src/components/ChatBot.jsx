@@ -229,13 +229,18 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     
     // Per-thread streaming state: threadId -> { isStreaming, streamingMessage, currentStreamingId, abortController, agentProgress, confirmRequest, queuedInput, pendingAgentRequest, liveCommentary }
     const [threadStreamingState, setThreadStreamingState] = useState({});
+    const defaultThreadStreamingState = { isStreaming: false, streamingMessage: '', currentStreamingId: null, abortController: null, agentProgress: null, confirmRequest: null, queuedInput: null, pendingAgentRequest: null, liveCommentary: [] };
+    const threadStreamingStateRef = useRef(threadStreamingState);
+    useEffect(() => {
+        threadStreamingStateRef.current = threadStreamingState;
+    }, [threadStreamingState]);
     
     // Helper to get/set per-thread state
-    const getThreadState = (threadId) => threadStreamingState[threadId] || { isStreaming: false, streamingMessage: '', currentStreamingId: null, abortController: null, agentProgress: null, confirmRequest: null, queuedInput: null, pendingAgentRequest: null, liveCommentary: [] };
+    const getThreadState = (threadId, source = threadStreamingState) => source[threadId] || defaultThreadStreamingState;
     const updateThreadStreamState = (threadId, updates) => {
         setThreadStreamingState(prev => ({
             ...prev,
-            [threadId]: { ...getThreadState(threadId), ...updates }
+            [threadId]: { ...getThreadState(threadId, prev), ...updates }
         }));
     };
     const messagesEndRef = useRef(null);
@@ -245,10 +250,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const currentThreadStreaming = getThreadState(activeThread.id);
     const { isStreaming, streamingMessage, agentProgress, confirmRequest, queuedInput, pendingAgentRequest, liveCommentary, currentStreamingId } = currentThreadStreaming;
     const isAssistantBusy = isStreaming || !!currentStreamingId || !!pendingAgentRequest;
-    const mainInputPlaceholder = useMemo(() => {
-        if (isAssistantBusy) return 'Type your next message; it will queue while the assistant is working...';
-        return 'Ask about markets, generate strategies, run backtests, download data...';
-    }, [isAssistantBusy]);
+    const mainInputPlaceholder = 'Ask about markets, generate strategies, run backtests, download data...';
     const chatTokenUsage = useMemo(() => {
         const usage = { input: 0, output: 0 };
         (activeThread?.messages || []).forEach(message => {
@@ -2009,6 +2011,17 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     // ── send ──────────────────────────────────────────────────────────────────
     const handleSend = async () => {
+        const userMsg = input.trim();
+        if (!userMsg) return;
+        const latest = getThreadState(activeThread.id, threadStreamingStateRef.current);
+        const latestBusy = latest.isStreaming || !!latest.currentStreamingId || !!latest.pendingAgentRequest;
+        if (latestBusy) {
+            setInputHistoryIndex(null);
+            setInputHistoryDraft('');
+            updateThreadStreamState(activeThread.id, { queuedInput: userMsg });
+            setInput('');
+            return;
+        }
         await submitUserMessage(input, { clearInput: true });
     };
 
@@ -4015,11 +4028,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
                 {/* input bar */}
                 <div style={{ padding: '0.85rem 1.5rem', borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
-                    {queuedInput && (
-                        <div style={{ marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                            Queued: "{queuedInput.slice(0, 80)}{queuedInput.length > 80 ? '...' : ''}"
-                        </div>
-                    )}
+                    <div style={{ minHeight: '1.1rem', marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)', opacity: queuedInput ? 1 : 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                        {queuedInput ? `Queued: "${queuedInput.slice(0, 80)}${queuedInput.length > 80 ? '...' : ''}"` : 'No queued message'}
+                    </div>
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
                         <textarea className="input chat-main-input" style={{ flex: 1, minHeight: '46px', maxHeight: '120px', resize: 'vertical' }}
                             placeholder={mainInputPlaceholder}

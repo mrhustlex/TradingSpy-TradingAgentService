@@ -285,7 +285,13 @@ body {
   min-height: 46px;
   max-height: 120px;
   resize: vertical;
-  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  transition: none;
+  transform: translateZ(0);
+}
+
+.chat-main-input:hover,
+.chat-main-input:focus {
+  background-color: var(--input-bg);
 }
 
 .btn {
