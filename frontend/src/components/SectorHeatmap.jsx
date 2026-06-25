@@ -12,8 +12,6 @@ const PAGE_SIZE = 30;
 const STOCK_BATCH_SIZE = 20;
 const STOCK_BATCH_CONCURRENCY = 4;
 const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'XLK', 'SMH', 'IGV', 'FDN', 'XLF', 'KBE', 'KRE', 'XLV', 'XBI', 'IHI', 'XLE', 'OIH', 'XOP', 'XLY', 'XLP', 'XRT', 'XLI', 'XLB', 'XLRE', 'RWR', 'XLU', 'XLC'];
-const ETF_BATCH_SIZE = 5;
-const ETF_BATCH_CONCURRENCY = 5;
 
 const PERIOD_OPTIONS = ['1min','5min','15min','30min','1h', '1d','5d','1mo','3mo','6mo','1y','2y','5y','10y','ytd','max'];
 const INTRADAY_INTERVAL = { '1min':'1m', '5min':'5m', '15min':'15m', '30min':'30m', '1h':'60m' };
@@ -249,36 +247,22 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                     ...extraEtfs,
                 ])];
                 setSectors({});
-                const industryBatches = chunkArray(INDUSTRY_PROXY_TICKERS, ETF_BATCH_SIZE);
-                let accumulatedIndustries = {};
-                let industryCursor = 0;
-                let loadedEtfs = 0;
-                const loadIndustryBatch = async () => {
-                    while (industryCursor < industryBatches.length && isCurrentRequest()) {
-                        const batch = industryBatches[industryCursor];
-                        industryCursor += 1;
-                        try {
-                            const res = await axios.post(`${INTELLIGENCE_SERVICE}/industry-heatmap?${params}${ext}`, batch);
-                            if (!isCurrentRequest()) return;
-                            accumulatedIndustries = mergeSectorData(accumulatedIndustries, res.data.sectors);
-                            newSectors = accumulatedIndustries;
-                            setSectors(accumulatedIndustries);
-                        } catch (e) {
-                            console.warn('Industry heatmap batch failed', batch, e);
-                        } finally {
-                            if (!isCurrentRequest()) return;
-                            loadedEtfs += batch.length;
-                            setHeatmapProgress({
-                                completed: Math.min(loadedEtfs, INDUSTRY_PROXY_TICKERS.length),
-                                total: INDUSTRY_PROXY_TICKERS.length,
-                                label: `Loaded ${Math.min(loadedEtfs, INDUSTRY_PROXY_TICKERS.length)} of ${INDUSTRY_PROXY_TICKERS.length} ETF proxies`,
-                            });
-                        }
-                    }
-                };
-                const industryPromise = Promise.all(
-                    Array.from({ length: Math.min(ETF_BATCH_CONCURRENCY, industryBatches.length) }, loadIndustryBatch)
-                ).then(() => accumulatedIndustries);
+                const industryPromise = axios.post(`${INTELLIGENCE_SERVICE}/industry-heatmap?${params}${ext}`, INDUSTRY_PROXY_TICKERS)
+                    .then(res => {
+                        if (!isCurrentRequest()) return null;
+                        newSectors = res.data.sectors || {};
+                        setSectors(newSectors);
+                        setHeatmapProgress({
+                            completed: INDUSTRY_PROXY_TICKERS.length,
+                            total: INDUSTRY_PROXY_TICKERS.length,
+                            label: `Loaded ${INDUSTRY_PROXY_TICKERS.length} ETF proxies`,
+                        });
+                        return newSectors;
+                    })
+                    .catch(e => {
+                        console.warn('Industry heatmap fetch failed', e);
+                        return {};
+                    });
                 const customPromise = allCustomTickers.length > 0
                     ? axios.post(`${INTELLIGENCE_SERVICE}/sector-heatmap?${params}${ext}`, allCustomTickers).then(cres => {
                         if (!isCurrentRequest()) return null;
