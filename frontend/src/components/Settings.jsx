@@ -11,22 +11,26 @@ const SUPPORTED_PROVIDERS = [
     { value: 'google_ai_studio', label: 'Google AI Studio' },
     { value: 'mistral', label: 'Mistral AI' },
     { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'litellm', label: 'LiteLLM' },
 ];
 const SUPPORTED_PROVIDER_VALUES = new Set(SUPPORTED_PROVIDERS.map(provider => provider.value));
 const normalizeProvider = (provider) => {
     const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
     if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
+    if (p === 'lite_llm' || p === 'lite') return 'litellm';
     return SUPPORTED_PROVIDER_VALUES.has(p) ? p : DEFAULT_PROVIDER;
 };
 const isSupportedProviderInput = (provider) => {
     const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
-    const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    let normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    if (normalized === 'lite_llm' || normalized === 'lite') normalized = 'litellm';
     return SUPPORTED_PROVIDER_VALUES.has(normalized);
 };
 
 // Keys that live in localStorage only — never sent to the server
 const LS_KEY = (k) => `settings_${k}`;
-const KEY_FIELDS = ['openrouter_api_key','google_ai_studio_api_key','mistral_api_key','tavily_api_key'];
+const KEY_FIELDS = ['openrouter_api_key','google_ai_studio_api_key','mistral_api_key','litellm_api_key','tavily_api_key'];
+const LOCAL_CONFIG_FIELDS = ['litellm_base_url'];
 
 function loadLocalKeys() {
     const out = {};
@@ -39,7 +43,16 @@ function saveLocalKeys(settings) {
 }
 
 function loadLocalProviderConfig() {
-    return {};
+    const out = {};
+    LOCAL_CONFIG_FIELDS.forEach(k => {
+        const value = localStorage.getItem(LS_KEY(k));
+        if (value) out[k] = value;
+    });
+    return out;
+}
+
+function saveLocalProviderConfig(settings) {
+    LOCAL_CONFIG_FIELDS.forEach(k => { localStorage.setItem(LS_KEY(k), settings[k] || ''); });
 }
 
 const INITIAL_SETTINGS = {
@@ -47,6 +60,8 @@ const INITIAL_SETTINGS = {
     openrouter_api_key: '',
     google_ai_studio_api_key: '',
     mistral_api_key: '',
+    litellm_api_key: '',
+    litellm_base_url: 'http://localhost:4000/v1',
     tavily_api_key: '',
     // non-sensitive — server
     default_provider: DEFAULT_PROVIDER,
@@ -194,6 +209,7 @@ const Settings = ({ notify }) => {
         try {
             // Keys stay in browser only
             saveLocalKeys(settings);
+            saveLocalProviderConfig(settings);
 
             // Also save default_provider and default_model to localStorage for frontend use
             localStorage.setItem('settings_default_provider', settings.default_provider);
@@ -206,6 +222,7 @@ const Settings = ({ notify }) => {
                 enable_openai_compatible_output,
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
+                litellm_base_url,
                 remote_agent_auth_token,
             } = settings;
             const serverPayload = {
@@ -214,6 +231,7 @@ const Settings = ({ notify }) => {
                 enable_openai_compatible_output,
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
+                litellm_base_url,
             };
             if (remote_agent_auth_token !== '') {
                 serverPayload.remote_agent_auth_token = remote_agent_auth_token;
@@ -243,6 +261,9 @@ const Settings = ({ notify }) => {
     const updateSetting = (key, value) => {
         setSettings(prev => ({ ...prev, [key]: value }));
         if (KEY_FIELDS.includes(key)) {
+            localStorage.setItem(LS_KEY(key), value || '');
+        }
+        if (LOCAL_CONFIG_FIELDS.includes(key)) {
             localStorage.setItem(LS_KEY(key), value || '');
         }
         if (key === 'default_provider') {
@@ -320,6 +341,21 @@ const Settings = ({ notify }) => {
                                 <input type="password" className="input" value={settings.mistral_api_key} onChange={(e) => updateSetting('mistral_api_key', e.target.value)} placeholder={settings.mistral_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'Mistral API key'} />
                                 <ProviderKeyNote configured={settings.mistral_api_key_configured} />
                             </div>
+                        )}
+
+                        {settings.default_provider === 'litellm' && (
+                            <>
+                                <div className="form-group">
+                                    <label>LiteLLM API Key</label>
+                                    <input type="password" className="input" value={settings.litellm_api_key} onChange={(e) => updateSetting('litellm_api_key', e.target.value)} placeholder={settings.litellm_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'Optional proxy key'} />
+                                    <ProviderKeyNote configured={settings.litellm_api_key_configured} />
+                                </div>
+                                <div className="form-group">
+                                    <label>LiteLLM Base URL</label>
+                                    <input className="input" value={settings.litellm_base_url} onChange={(e) => updateSetting('litellm_base_url', e.target.value)} placeholder="http://localhost:4000/v1" />
+                                    <div style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: '0.35rem' }}>Use your LiteLLM proxy OpenAI-compatible base URL.</div>
+                                </div>
+                            </>
                         )}
 
                     </div>
@@ -616,6 +652,7 @@ const Settings = ({ notify }) => {
                                 <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: '#4285F4' }}>Google AI Studio</strong>: <code style={{ color: 'white' }}>gemini-2.5-flash</code>, <code style={{ color: 'white' }}>gemini-2.0-flash</code></div>
                                 <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-red)' }}>Mistral</strong>: <code style={{ color: 'white' }}>mistral-large-latest</code>, <code style={{ color: 'white' }}>open-mixtral-8x22b</code></div>
                                 <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-blue)' }}>OpenRouter</strong>: use the provider/model ID shown in OpenRouter, for example <code style={{ color: 'white' }}>openai/gpt-4o-mini</code>.</div>
+                                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.75rem', borderRadius: '6px' }}><strong style={{ color: 'var(--brand-green)' }}>LiteLLM</strong>: use the model ID configured in your LiteLLM proxy, for example <code style={{ color: 'white' }}>gpt-4o-mini</code>.</div>
                             </div>
                             <div style={{ marginTop: '2rem', textAlign: 'right' }}>
                                 <button className="btn btn-primary" onClick={() => setShowModelHelp(false)}>Got it</button>

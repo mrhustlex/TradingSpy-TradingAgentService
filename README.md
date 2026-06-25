@@ -14,7 +14,7 @@ It is not a broker and it does not place trades. It is a local research environm
 - Generate Backtrader strategies with an agent that validates code, rejects zero-trade results, and compares against buy-and-hold or a baseline strategy.
 - See the agent work in public: data freshness, market context, candidate generation, validation failures, backtests, benchmark deltas, and stale/offline states.
 - Run local Docker services with persistent data under `backend/data/`.
-- Use validated LLM providers in the app: Google AI Studio, Mistral, and OpenRouter.
+- Use validated LLM providers in the app: Google AI Studio, Mistral, OpenRouter, and LiteLLM.
 - Use the backend as an OpenAI-compatible local API for agentic trading research clients.
 
 ## Demo Prompts
@@ -39,14 +39,45 @@ Generate a strict RSI + volume + breakout strategy for SMH this year, but reject
 
 ## Features
 
-### AI Strategy Agent
+### Agents
 
-- LLM-routed intent detection for strategy creation, strategy improvement, backtesting, data tasks, and normal analysis chat.
-- Multi-round strategy generation with validation before backtest.
-- Benchmarks against buy-and-hold or a selected baseline strategy.
-- Rejects inactive zero-trade strategies instead of treating `0% ROI` as meaningful.
-- Shows live progress: model calls, validation checks, strategy saves, optimization combinations, runtime errors, and rejection reasons.
-- Supports agent instructions, answer budget, run detail, and custom battle parameters.
+TradingSpy has several agent paths. They share the same market/backtest backend,
+but they are used for different jobs.
+
+| Agent path | Where it runs | What it does | Typical trigger |
+| --- | --- | --- | --- |
+| Normal tool-using assistant | Chat UI, `/api/backtest/ai/chat-with-tools` | Answers research questions with tools for market overview, heatmaps, news, fundamentals, insider activity, candles, strategy code, and backtest history. It is meant for interactive analysis and short tool checks. | "Why is the market moving?", "Any insider buying?", "Explain this strategy." |
+| Background workflow agent | Chat UI, `/api/agent/runs` | Starts a persistent run with a run ID, plan steps, progress, event logs, stop/retry/continue controls, and Task Center monitoring. It is used for longer work that should keep state outside the chat stream. | "Generate until it beats buy and hold", "Improve EMA_Trend", "Screen undervalued stocks." |
+| Strategy creation workflow | Background workflow `strategy_create` | Resolves ticker/data, checks freshness, reads market context, asks the configured LLM for candidate Backtrader code, validates generated code, saves candidates, runs backtests, rejects broken or zero-trade strategies, and compares against buy-and-hold. | New strategy requests. |
+| Strategy race workflow | Background workflow `strategy_race` | Improves or compares strategies over rounds. It can use a previous accepted version or selected baseline, generate candidates, backtest them, and accept only versions that beat the target benchmark. | Improve/optimize/beat requests. |
+| Fundamental screener workflow | Background workflow `fundamental_screener` | Screens a universe for valuation/growth/profitability candidates, enriches passing names with market context, news/options/insider summaries when available, and can continue with a wider universe. | "Find undervalued stocks", "screen cheap growth stocks." |
+| Market review workflow | Background workflow `market_review` | Handles data freshness and market-data tasks, such as checking or syncing datasets before analysis or strategy work. | "Check freshness", "download/sync data." |
+| OpenAI-compatible agent | `/v1/chat/completions` | Lets external clients call TradingSpy with OpenAI-style requests. Model IDs choose manual, legacy agentic, or current iterative agent behavior. | Local integrations, scripts, automations. |
+| ACP/A2A remote agents | ACP router and `/a2a/...` endpoints | Exposes selected capabilities to other agent clients: market data, backtests, intelligence, and strategy metadata. These outputs are disabled by default unless enabled in Settings. | Interop with trusted external agent clients. |
+
+The chat UI first classifies the user message with `/api/agent/intent`. If the
+request is quick analysis, it stays in the normal tool-using assistant. If the
+request is long-running work, the UI creates a background run through
+`/api/agent/runs`. Background runs are stored locally, visible in the Task
+Center, and support:
+
+- `GET /api/agent/runs` to list recent runs.
+- `GET /api/agent/runs/{run_id}` to poll full state.
+- `POST /api/agent/runs/{run_id}/stop` to request cancellation.
+- `POST /api/agent/runs/{run_id}/continue` to continue a completed/stopped run.
+- `DELETE /api/agent/runs/{run_id}` or `DELETE /api/agent/runs` to clean records.
+
+For strategy workflows, the agent is deliberately conservative: it validates
+generated code before backtesting, rejects inactive zero-trade results instead
+of treating `0% ROI` as meaningful, and reports validation failures/runtime
+errors as part of the public run log. It supports custom agent instructions,
+answer budget, run detail, sequential/parallel execution, and custom battle
+parameters.
+
+For insider buy/sell questions, the normal assistant uses deterministic
+tool-backed responses. It should report only returned records and separate
+open-market buys/sells from grants or awards; if the feed is unavailable, it
+should say so instead of filling gaps from memory.
 
 ### Backtesting And Optimization
 
@@ -147,12 +178,17 @@ npm run dev
 flowchart LR
     User["User / Browser"] --> Frontend["React Frontend<br/>localhost:3000"]
     Frontend --> Backend["FastAPI Backend<br/>localhost:8000"]
-    Backend --> Agent["Strategy Agent<br/>intent + generation + validation"]
+    Backend --> ChatAgent["Tool-Using Chat Assistant<br/>short research + tool checks"]
+    Backend --> WorkflowAgent["Background Workflow Agents<br/>strategy_create / strategy_race / market_review / fundamental_screener"]
+    Backend --> RemoteAgents["Remote Agent Outputs<br/>OpenAI-compatible / ACP / A2A"]
     Backend --> Backtest["Backtrader Engine<br/>backtests + optimization"]
     Backend --> Market["Market Intelligence<br/>yfinance + heatmaps + news"]
     Backend --> Store["Local Data<br/>TinyDB + candles + strategies"]
     Backend --> Search["SearXNG<br/>localhost:8080"]
-    Agent --> LLM["Validated LLM Providers<br/>Google AI Studio / Mistral / OpenRouter"]
+    ChatAgent --> LLM["Validated LLM Providers<br/>Google AI Studio / Mistral / OpenRouter / LiteLLM"]
+    WorkflowAgent --> LLM
+    RemoteAgents --> ChatAgent
+    RemoteAgents --> WorkflowAgent
 ```
 
 ## Data Layout
@@ -192,21 +228,33 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-Current assistant model IDs:
+Current OpenAI-compatible model IDs:
 
 Use `trading-ai-strands` for normal integrations. It is the current recommended
-agent loop for tool-using TradingSpy assistant behavior.
+agent loop for tool-using TradingSpy assistant behavior. These model IDs are
+adapter modes, not separate trained models; they choose which backend path is
+used.
 
 | Model ID | Mode | Behavior |
 | --- | --- | --- |
-| `trading-ai-strands` | Recommended agent | Current tool-using assistant loop for research, data checks, strategy work, and backtests |
-| `trading-ai` | Compatibility alias | Manual/plain assistant path; no tool execution |
-| `trading-ai-manual` | Compatibility alias | Same manual/plain assistant path as `trading-ai` |
-| `trading-ai-agentic` | Legacy agentic path | Older streaming tool path kept for compatibility |
+| `trading-ai-strands` | Iterative tool agent | Current recommended loop for external clients. It can call tools repeatedly, observe results, and continue until it has enough evidence. |
+| `trading-ai-agentic` | Legacy streaming agent | Older streaming tool path kept for compatibility. Prefer `trading-ai-strands` for new clients. |
+| `trading-ai` | Manual/plain assistant | Direct LLM response path with no tool execution. Useful only when a client wants plain text behavior. |
+| `trading-ai-manual` | Manual/plain assistant | Same manual path as `trading-ai`. |
 
 For new OpenAI-compatible clients, use `trading-ai-strands` with `stream: true`.
 The main web UI uses the backend assistant endpoints directly and also routes
 normal assistant work through the current tool-using flow.
+
+Remote agent outputs can be enabled in Settings:
+
+- OpenAI-compatible output exposes `/v1/models` and `/v1/chat/completions`.
+- ACP Agent exposes discoverable capability agents such as `market-data`,
+  `backtest`, `intelligence`, and `strategy`.
+- A2A Remote Agent exposes `/.well-known/agent-card.json` and `/a2a/...` task
+  endpoints.
+
+Set a Remote Agent Auth Token before exposing ACP/A2A beyond localhost.
 
 ## Configuration
 
@@ -219,6 +267,8 @@ GROQ_API_KEY=
 GOOGLE_AI_STUDIO_API_KEY=
 GEMINI_API_KEY=
 MISTRAL_API_KEY=
+LITELLM_API_KEY=
+LITELLM_BASE_URL=http://localhost:4000/v1
 AZURE_OPENAI_API_KEY=
 AZURE_OPENAI_ENDPOINT=
 AZURE_OPENAI_API_VERSION=

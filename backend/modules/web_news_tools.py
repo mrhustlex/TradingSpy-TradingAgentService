@@ -9,6 +9,7 @@ import requests
 import logging
 import ipaddress
 import socket
+import time
 from urllib.parse import urlparse, urljoin
 
 logger = logging.getLogger(__name__)
@@ -218,14 +219,34 @@ def fetch_website(url: str) -> dict:
 def _fallback_duckduckgo_search(query: str) -> dict:
     """Fallback to DuckDuckGo if SearXNG is unavailable"""
     try:
-        resp = requests.get(
-            "https://api.duckduckgo.com/",
-            params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10,
-        )
+        resp = None
+        for attempt in range(3):
+            resp = requests.get(
+                "https://api.duckduckgo.com/",
+                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Accept": "application/json,text/plain,*/*",
+                },
+                timeout=10,
+            )
+            if resp.status_code != 202:
+                break
+            logger.info("DuckDuckGo fallback returned HTTP 202 for '%s' on attempt %s", query, attempt + 1)
+            time.sleep(0.6 * (attempt + 1))
+
+        if resp is None:
+            return {"query": query, "results": [], "source": "DuckDuckGo", "count": 0, "message": "Search provider did not return a response."}
+
         if resp.status_code != 200:
-            return {"error": f"Search failed: HTTP {resp.status_code}", "query": query, "results": []}
+            return {
+                "query": query,
+                "results": [],
+                "source": "DuckDuckGo",
+                "count": 0,
+                "message": f"Search provider temporarily unavailable (HTTP {resp.status_code}). Continue with available market data and ticker news.",
+                "warning": f"DuckDuckGo fallback HTTP {resp.status_code}",
+            }
 
         data = resp.json()
         results = []

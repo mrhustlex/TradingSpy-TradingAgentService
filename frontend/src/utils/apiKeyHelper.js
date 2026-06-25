@@ -5,16 +5,18 @@
 
 const DEFAULT_PROVIDER = 'google_ai_studio';
 const DEFAULT_MODEL = 'gemini-2.5-flash';
-const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter']);
+const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter', 'litellm']);
 
 const normalizeProvider = (provider) => {
     const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
     if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
+    if (p === 'lite_llm' || p === 'lite') return 'litellm';
     return supportedProviders.has(p) ? p : DEFAULT_PROVIDER;
 };
 const isSupportedProviderInput = (provider) => {
     const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
-    const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    let normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    if (normalized === 'lite_llm' || normalized === 'lite') normalized = 'litellm';
     return supportedProviders.has(normalized);
 };
 
@@ -24,6 +26,7 @@ const keyMap = {
     googleaistudio: 'settings_google_ai_studio_api_key',
     gemini: 'settings_google_ai_studio_api_key',
     mistral: 'settings_mistral_api_key',
+    litellm: 'settings_litellm_api_key',
 };
 
 export const getApiSettings = () => {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { INTELLIGENCE_SERVICE } from '../config';
-import { RefreshCw, TrendingUp, TrendingDown, Search, Newspaper, Filter, Loader2, MessageCircleQuestion, Activity, Save, Trash2 } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Search, Newspaper, Filter, Loader2, MessageCircleQuestion, Activity, Save, Trash2, X } from 'lucide-react';
 
 const MAJOR_STOCKS = [
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO',
@@ -19,6 +19,7 @@ const MAJOR_STOCKS = [
 const MOVEMENT_CHUNK_SIZE = 8;
 const MOVEMENT_CHUNK_CONCURRENCY = 3;
 const MOVEMENT_CACHE_TTL_MS = 60_000;
+const NEWS_MOVER_PAGE_SIZE = 6;
 
 const MOVEMENT_WINDOWS = {
     '5m': { label: '5 Min', period: '1d', interval: '5m' },
@@ -183,6 +184,105 @@ const MetricCell = ({ label, value, help }) => (
     </div>
 );
 
+const MoverStockDetail = ({ ticker, mover, onClose, onExplain }) => {
+    const [info, setInfo] = useState(null);
+    const [technicals, setTechnicals] = useState(null);
+    const [news, setNews] = useState([]);
+    const [earnings, setEarnings] = useState(null);
+    const [recommendations, setRecommendations] = useState(null);
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        if (!ticker) return;
+        setLoading(true);
+        Promise.all([
+            axios.get(`${INTELLIGENCE_SERVICE}/info/${ticker}`).then(r => r.data).catch(() => null),
+            axios.get(`${INTELLIGENCE_SERVICE}/technicals/${ticker}`).then(r => r.data).catch(() => null),
+            axios.get(`${INTELLIGENCE_SERVICE}/news/${ticker}?limit=6`).then(r => r.data.news || []).catch(() => []),
+            axios.get(`${INTELLIGENCE_SERVICE}/earnings/${ticker}`).then(r => r.data).catch(() => null),
+            axios.get(`${INTELLIGENCE_SERVICE}/recommendations/${ticker}`).then(r => r.data).catch(() => null),
+        ]).then(([infoData, technicalData, newsData, earningsData, recommendationData]) => {
+            setInfo(infoData);
+            setTechnicals(technicalData);
+            setNews(newsData);
+            setEarnings(earningsData);
+            setRecommendations(recommendationData);
+        }).finally(() => setLoading(false));
+    }, [ticker]);
+
+    if (!ticker) return null;
+
+    const change = mover?.change_percent ?? info?.change_percent;
+    const explain = () => {
+        const headlines = news.slice(0, 3).map(item => item.title).filter(Boolean).join('; ');
+        const prompt = `Analyze ${ticker} from the Market Movers detail panel. Name: ${info?.name || mover?.name || ticker}. Sector: ${info?.sector || mover?.sector || 'unknown'}, industry: ${info?.industry || mover?.industry || 'unknown'}. Move: ${change != null ? `${change}%` : 'unknown'}, price: ${mover?.price ?? info?.current_price ?? '-'}, volume: ${mover?.volume ?? '-'}, market cap: ${mover?.market_cap ?? info?.market_cap ?? '-'}. Technicals: RSI ${technicals?.rsi_14 ?? '-'}, SMA20 ${technicals?.sma_20 ?? '-'}, SMA50 ${technicals?.sma_50 ?? '-'}, trend ${technicals?.trend || '-'}. Recent headlines: ${headlines || 'none loaded'}. Explain whether this looks stock-specific or industry-wide, key catalysts/risks, and what to watch next.`;
+        onExplain?.(prompt, `Explaining ${ticker}`);
+    };
+
+    const statCards = [
+        { label: 'Move', value: change != null ? `${change >= 0 ? '+' : ''}${Number(change).toFixed(2)}%` : '-', color: change >= 0 ? 'var(--brand-green)' : 'var(--brand-red)' },
+        { label: 'Price', value: mover?.price != null ? `$${Number(mover.price).toFixed(2)}` : info?.current_price != null ? `$${Number(info.current_price).toFixed(2)}` : '-' },
+        { label: 'Volume', value: formatLarge(mover?.volume) },
+        { label: 'Market cap', value: formatLarge(mover?.market_cap ?? info?.market_cap) },
+        { label: 'RSI', value: technicals?.rsi_14 != null ? Number(technicals.rsi_14).toFixed(1) : '-' },
+        { label: 'Trend', value: technicals?.trend || '-' },
+    ];
+
+    return (
+        <div className="terminal-card" style={{ marginTop: '1rem', padding: 0, border: '1px solid var(--border-subtle)', overflow: 'hidden', flexShrink: 0 }}>
+            <div style={{ padding: '0.8rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+                <button className="btn btn-xs btn-ghost" onClick={onClose} title="Close detail" style={{ padding: '0.2rem 0.35rem' }}>
+                    <X size={14} />
+                </button>
+                <strong style={{ fontSize: '1rem' }}>{ticker}</strong>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {info?.name || mover?.name || 'Loading stock detail'}{info?.sector || mover?.sector ? ` · ${info?.sector || mover?.sector}` : ''}{info?.industry || mover?.industry ? ` · ${info?.industry || mover?.industry}` : ''}
+                </span>
+                {loading && <Loader2 size={14} className="animate-spin" style={{ marginLeft: 'auto' }} />}
+                <button className="btn btn-xs btn-ghost" onClick={explain} style={{ marginLeft: loading ? 0 : 'auto' }}>
+                    <MessageCircleQuestion size={13} /> Explain
+                </button>
+            </div>
+            <div style={{ padding: '0.9rem 1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0.65rem' }}>
+                {statCards.map(card => (
+                    <div key={card.label} className="panel" style={{ margin: 0, padding: '0.65rem 0.75rem' }}>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>{card.label}</div>
+                        <div style={{ fontSize: '0.92rem', fontWeight: 800, color: card.color || 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.value}</div>
+                    </div>
+                ))}
+            </div>
+            <div style={{ padding: '0 1rem 1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.8rem' }}>
+                <div className="panel" style={{ margin: 0, padding: '0.8rem' }}>
+                    <div style={{ fontSize: '0.78rem', fontWeight: 800, marginBottom: '0.55rem' }}>Recent News</div>
+                    {news.length > 0 ? (
+                        <div style={{ display: 'grid', gap: '0.55rem' }}>
+                            {news.slice(0, 4).map((item, index) => (
+                                <a key={`${item.title}-${index}`} href={item.link || '#'} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: 'inherit' }}>
+                                    <div style={{ fontSize: '0.78rem', fontWeight: 700, lineHeight: 1.35 }}>{item.title || 'Untitled headline'}</div>
+                                    <div style={{ marginTop: '0.2rem', fontSize: '0.68rem', color: 'var(--text-muted)' }}>{item.publisher || 'Unknown'} {formatDate(item.published) ? `· ${formatDate(item.published)}` : ''}</div>
+                                </a>
+                            ))}
+                        </div>
+                    ) : (
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{loading ? 'Loading headlines...' : 'No recent headlines found.'}</div>
+                    )}
+                </div>
+                <div className="panel" style={{ margin: 0, padding: '0.8rem' }}>
+                    <div style={{ fontSize: '0.78rem', fontWeight: 800, marginBottom: '0.55rem' }}>Context</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem', fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                        <MetricCell label="SMA20" value={technicals?.sma_20 != null ? Number(technicals.sma_20).toFixed(2) : '-'} />
+                        <MetricCell label="SMA50" value={technicals?.sma_50 != null ? Number(technicals.sma_50).toFixed(2) : '-'} />
+                        <MetricCell label="Prev close" value={info?.previous_close != null ? `$${Number(info.previous_close).toFixed(2)}` : '-'} />
+                        <MetricCell label="Forward PE" value={info?.forward_pe ?? '-'} />
+                        <MetricCell label="Earnings" value={earnings?.earnings_date || earnings?.next_earnings_date || '-'} />
+                        <MetricCell label="Rating" value={recommendations?.recommendation || recommendations?.mean_recommendation || '-'} />
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const SIGNAL_BADGE_HELP = {
     'Confirmed momentum': 'Move score is at least 1.8 and volume is at least 1.2x its recent average.',
     'Abnormal move': 'Move score is at least 1.8, but volume does not confirm the move at 1.2x or higher.',
@@ -227,10 +327,17 @@ const IndustryMovements = ({ notify, onExplain }) => {
     const [gainerSortAsc, setGainerSortAsc] = useState(false);
     const [loserSortBy, setLoserSortBy] = useState('change_percent');
     const [loserSortAsc, setLoserSortAsc] = useState(true);
+    const [selectedMover, setSelectedMover] = useState(null);
     const [newsItems, setNewsItems] = useState([]);
     const [newsLoading, setNewsLoading] = useState(false);
     const [newsLoadedCount, setNewsLoadedCount] = useState(0);
     const [newsStatus, setNewsStatus] = useState('');
+    const [newsMoverLimit, setNewsMoverLimit] = useState(NEWS_MOVER_PAGE_SIZE);
+    const [newsPerTicker, setNewsPerTicker] = useState(1);
+    const [newsSearchInput, setNewsSearchInput] = useState('');
+    const [newsSearchTicker, setNewsSearchTicker] = useState('');
+    const [newsRefreshToken, setNewsRefreshToken] = useState(0);
+    const [newsVisibleCount, setNewsVisibleCount] = useState(12);
     const [showAllIndustries, setShowAllIndustries] = useState(false);
     const [signalStats, setSignalStats] = useState([]);
     const [signalLoading, setSignalLoading] = useState(false);
@@ -547,6 +654,29 @@ const IndustryMovements = ({ notify, onExplain }) => {
         ];
     }, [entries]);
 
+    const newsMovers = useMemo(() => {
+        const searchTicker = newsSearchTicker.trim().toUpperCase();
+        if (searchTicker) {
+            const match = entries.find(e => e.ticker === searchTicker);
+            return [{
+                ...(match || { ticker: searchTicker, name: searchTicker, change_percent: null }),
+                direction: match?.change_percent >= 0 ? 'highest' : match?.change_percent < 0 ? 'lowest' : 'search',
+            }];
+        }
+        const byChange = [...entries].filter(e => e.change_percent != null);
+        const perSide = Math.max(1, Math.ceil(newsMoverLimit / 2));
+        const highest = [...byChange].sort((a, b) => b.change_percent - a.change_percent).slice(0, perSide);
+        const lowest = [...byChange].sort((a, b) => a.change_percent - b.change_percent).slice(0, perSide);
+        return [
+            ...highest.map(e => ({ ...e, direction: 'highest' })),
+            ...lowest.map(e => ({ ...e, direction: 'lowest' })),
+        ].slice(0, newsMoverLimit);
+    }, [entries, newsMoverLimit, newsSearchTicker]);
+
+    const maxNewsMoverCount = useMemo(() => (
+        newsSearchTicker ? 1 : entries.filter(e => e.change_percent != null).length
+    ), [entries, newsSearchTicker]);
+
     const suggestedSignalTickers = useMemo(() => {
         const source = activeIndustry !== 'All' ? filtered : coreMovers;
         return [...new Set(source.map(e => e.ticker).filter(Boolean))].slice(0, 8);
@@ -695,17 +825,22 @@ const IndustryMovements = ({ notify, onExplain }) => {
     }, [signalPeriod, signalInterval, signalIncludePeers, resolvePeerTickers]);
 
     useEffect(() => {
-        if (activeTab !== 'news' || coreMovers.length === 0) {
+        if (activeTab !== 'news' || newsMovers.length === 0) {
             setNewsLoading(false);
             setNewsLoadedCount(0);
             return;
         }
-        const key = coreMovers.map(m => `${m.ticker}:${m.change_percent}`).join('|');
+        const key = [
+            `per=${newsPerTicker}`,
+            `search=${newsSearchTicker || '-'}`,
+            `refresh=${newsRefreshToken}`,
+            newsMovers.map(m => `${m.ticker}:${m.change_percent}`).join('|'),
+        ].join('::');
         if (key === newsRequestKeyRef.current) return;
         if (cachedMoverNews.has(key)) {
             const cached = cachedMoverNews.get(key);
             setNewsItems(cached);
-            setNewsLoadedCount(coreMovers.length);
+            setNewsLoadedCount(newsMovers.length);
             setNewsLoading(false);
             setNewsStatus(`Loaded ${cached.length} cached headline${cached.length === 1 ? '' : 's'}`);
             newsRequestKeyRef.current = key;
@@ -716,24 +851,24 @@ const IndustryMovements = ({ notify, onExplain }) => {
         setNewsLoading(true);
         setNewsLoadedCount(0);
         setNewsItems([]);
-        setNewsStatus(`Starting headline scan for ${coreMovers.length} movers`);
+        setNewsStatus(`Starting headline scan for ${newsMovers.length} ticker${newsMovers.length === 1 ? '' : 's'}`);
         newsRequestKeyRef.current = key;
-        const moverMap = new Map(coreMovers.map(m => [m.ticker, m]));
+        const moverMap = new Map(newsMovers.map(m => [m.ticker, m]));
         const accumulated = [];
         let cursor = 0;
         let completed = 0;
         let finalized = false;
         const NEWS_CONCURRENCY = 4;
 
-        console.info('[CoreHeadlines] start', { key, tickers: coreMovers.map(m => m.ticker) });
+        console.info('[CoreHeadlines] start', { key, tickers: newsMovers.map(m => m.ticker), perTicker: newsPerTicker });
 
         const finalizeNews = (reason) => {
             if (finalized || controller.signal.aborted) return;
             finalized = true;
-            console.info('[CoreHeadlines] finish', { reason, completed, total: coreMovers.length, items: accumulated.length });
+            console.info('[CoreHeadlines] finish', { reason, completed, total: newsMovers.length, items: accumulated.length });
             cachedMoverNews.set(key, accumulated);
             setNewsItems([...accumulated]);
-            setNewsStatus(`Loaded ${accumulated.length} headline${accumulated.length === 1 ? '' : 's'} from ${completed}/${coreMovers.length} movers`);
+            setNewsStatus(`Loaded ${accumulated.length} headline${accumulated.length === 1 ? '' : 's'} from ${completed}/${newsMovers.length} ticker${newsMovers.length === 1 ? '' : 's'}`);
             setNewsLoading(false);
         };
 
@@ -743,13 +878,13 @@ const IndustryMovements = ({ notify, onExplain }) => {
         }, 9000);
 
         const loadNextHeadline = async () => {
-            while (cursor < coreMovers.length && !controller.signal.aborted) {
-                const mover = coreMovers[cursor];
+            while (cursor < newsMovers.length && !controller.signal.aborted) {
+                const mover = newsMovers[cursor];
                 cursor += 1;
                 console.info('[CoreHeadlines] request', mover.ticker);
-                setNewsStatus(`Checking ${mover.ticker} (${completed}/${coreMovers.length})`);
+                setNewsStatus(`Checking ${mover.ticker} (${completed}/${newsMovers.length})`);
                 try {
-                    const res = await axios.post(`${INTELLIGENCE_SERVICE}/news-titles?limit=1`, [mover.ticker], {
+                    const res = await axios.post(`${INTELLIGENCE_SERVICE}/news-titles?limit=${newsPerTicker}`, [mover.ticker], {
                         signal: controller.signal,
                         timeout: 4500,
                     });
@@ -767,13 +902,13 @@ const IndustryMovements = ({ notify, onExplain }) => {
                     completed += 1;
                     if (!controller.signal.aborted) {
                         setNewsLoadedCount(completed);
-                        setNewsStatus(`Loaded ${accumulated.length} headline${accumulated.length === 1 ? '' : 's'} · ${completed}/${coreMovers.length} movers checked`);
+                        setNewsStatus(`Loaded ${accumulated.length} headline${accumulated.length === 1 ? '' : 's'} · ${completed}/${newsMovers.length} ticker${newsMovers.length === 1 ? '' : 's'} checked`);
                     }
                 }
             }
         };
 
-        Promise.all(Array.from({ length: Math.min(NEWS_CONCURRENCY, coreMovers.length) }, loadNextHeadline))
+        Promise.all(Array.from({ length: Math.min(NEWS_CONCURRENCY, newsMovers.length) }, loadNextHeadline))
             .finally(() => {
                 clearTimeout(hardStop);
                 finalizeNews('complete');
@@ -784,7 +919,35 @@ const IndustryMovements = ({ notify, onExplain }) => {
             controller.abort();
             console.info('[CoreHeadlines] abort', { key });
         };
-    }, [activeTab, coreMovers]);
+    }, [activeTab, newsMovers, newsPerTicker, newsSearchTicker, newsRefreshToken]);
+
+    const visibleNewsItems = newsItems.slice(0, newsVisibleCount);
+
+    const submitNewsSearch = (event) => {
+        event?.preventDefault();
+        const nextTicker = parseTickers(newsSearchInput)[0] || '';
+        setNewsSearchTicker(nextTicker);
+        setNewsMoverLimit(NEWS_MOVER_PAGE_SIZE);
+        setNewsVisibleCount(12);
+    };
+
+    const clearNewsSearch = () => {
+        setNewsSearchInput('');
+        setNewsSearchTicker('');
+        setNewsMoverLimit(NEWS_MOVER_PAGE_SIZE);
+        setNewsVisibleCount(12);
+    };
+
+    const loadMoreNews = () => {
+        if (newsVisibleCount < newsItems.length) {
+            setNewsVisibleCount(count => count + 12);
+            return;
+        }
+        if (!newsSearchTicker && newsMoverLimit < maxNewsMoverCount) {
+            setNewsMoverLimit(count => Math.min(count + NEWS_MOVER_PAGE_SIZE, maxNewsMoverCount));
+            setNewsVisibleCount(count => count + 12);
+        }
+    };
 
     const renderRows = (rows, panel) => {
         if (rows.length === 0) {
@@ -803,7 +966,16 @@ const IndustryMovements = ({ notify, onExplain }) => {
         return rows.map((e, i) => (
             <tr key={`${panel}-${e.ticker}`}>
                 <td style={{ opacity: 0.4, fontSize: '0.75rem' }}>{i + 1}</td>
-                <td><span className="badge badge-blue" style={{ fontSize: '0.7rem' }}>{e.ticker}</span></td>
+                <td>
+                    <button
+                        className="badge badge-blue"
+                        onClick={() => setSelectedMover(e)}
+                        title={`Show ${e.ticker} stock detail`}
+                        style={{ fontSize: '0.7rem', border: 0, cursor: 'pointer' }}
+                    >
+                        {e.ticker}
+                    </button>
+                </td>
                 <td style={{ fontSize: '0.78rem', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</td>
                 <td>
                     <button
@@ -1057,7 +1229,7 @@ const IndustryMovements = ({ notify, onExplain }) => {
             {metricLeaders.length > 0 && activeTab === 'movers' && (
                 <div style={{ display: 'flex', gap: '0.5rem', overflowX: 'auto', marginBottom: '1rem', flexShrink: 0 }}>
                     {metricLeaders.map(entry => (
-                        <button key={`leader-${entry.ticker}`} onClick={() => setSearch(entry.ticker)} className="terminal-card" style={{ border: '1px solid var(--border-subtle)', padding: '0.6rem 0.75rem', minWidth: 150, textAlign: 'left', cursor: 'pointer', color: 'var(--text-primary)', background: 'var(--bg-card)' }}>
+                        <button key={`leader-${entry.ticker}`} onClick={() => setSelectedMover(entry)} className="terminal-card" style={{ border: '1px solid var(--border-subtle)', padding: '0.6rem 0.75rem', minWidth: 150, textAlign: 'left', cursor: 'pointer', color: 'var(--text-primary)', background: 'var(--bg-card)' }} title={`Show ${entry.ticker} stock detail`}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', alignItems: 'center' }}>
                                 <strong style={{ fontSize: '0.8rem' }}>{entry.ticker}</strong>
                                 <span style={{ color: (entry.change_percent ?? 0) >= 0 ? 'var(--brand-green)' : 'var(--brand-red)', fontSize: '0.76rem', fontWeight: 700 }}>
@@ -1073,10 +1245,20 @@ const IndustryMovements = ({ notify, onExplain }) => {
             )}
 
             {activeTab === 'movers' ? (
-                <div style={{ display: 'flex', gap: '1.5rem', flex: 1, minHeight: 0 }}>
-                    {renderMoverTable('Gainers', gainers, 'gainers', <TrendingUp size={16} style={{ color: 'var(--brand-green)' }} />, 'rgba(16, 185, 129, 0.1)', 'badge-green')}
-                    {renderMoverTable('Losers', losers, 'losers', <TrendingDown size={16} style={{ color: 'var(--brand-red)' }} />, 'rgba(239, 68, 68, 0.1)', 'badge-red')}
-                </div>
+                <>
+                    <div style={{ display: 'flex', gap: '1.5rem', flex: selectedMover ? '0 1 58%' : 1, minHeight: 0 }}>
+                        {renderMoverTable('Gainers', gainers, 'gainers', <TrendingUp size={16} style={{ color: 'var(--brand-green)' }} />, 'rgba(16, 185, 129, 0.1)', 'badge-green')}
+                        {renderMoverTable('Losers', losers, 'losers', <TrendingDown size={16} style={{ color: 'var(--brand-red)' }} />, 'rgba(239, 68, 68, 0.1)', 'badge-red')}
+                    </div>
+                    {selectedMover && (
+                        <MoverStockDetail
+                            ticker={selectedMover.ticker}
+                            mover={selectedMover}
+                            onClose={() => setSelectedMover(null)}
+                            onExplain={onExplain}
+                        />
+                    )}
+                </>
             ) : activeTab === 'signal' ? (
                 <div className="terminal-card" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 0 }}>
                     <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -1261,43 +1443,93 @@ const IndustryMovements = ({ notify, onExplain }) => {
                 </div>
             ) : (
                 <div className="terminal-card" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 0 }}>
-                    <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                         <Newspaper size={16} />
-                        <strong style={{ fontSize: '0.95rem' }}>Core Headlines From Highest And Lowest Movers</strong>
+                        <strong style={{ fontSize: '0.95rem' }}>{newsSearchTicker ? `${newsSearchTicker} Headlines` : 'Headlines From Market Movers'}</strong>
                         {newsLoading && (
                             <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.45rem', color: 'var(--text-muted)', fontSize: '0.78rem' }}>
                                 <Loader2 size={15} className="animate-spin" />
-                                {newsLoadedCount}/{coreMovers.length}
+                                {newsLoadedCount}/{newsMovers.length}
                             </span>
                         )}
+                    </div>
+                    <div style={{ padding: '0.65rem 1rem', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+                        <span className="badge badge-blue" style={{ fontSize: '0.68rem' }}>
+                            {newsSearchTicker ? 'Ticker search' : `${Math.min(newsMoverLimit, maxNewsMoverCount || newsMoverLimit)} movers loaded`}
+                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                            {[1, 3, 5].map(count => (
+                                <button
+                                    key={count}
+                                    className={`btn btn-xs ${newsPerTicker === count ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => { setNewsPerTicker(count); setNewsMoverLimit(NEWS_MOVER_PAGE_SIZE); setNewsVisibleCount(12); }}
+                                    disabled={newsLoading}
+                                >
+                                    {count}/ticker
+                                </button>
+                            ))}
+                        </div>
+                        <form onSubmit={submitNewsSearch} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 220, flex: '0 1 320px' }}>
+                            <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                                <Search size={14} style={{ position: 'absolute', left: '0.6rem', top: '50%', transform: 'translateY(-50%)', opacity: 0.4 }} />
+                                <input
+                                    className="input"
+                                    value={newsSearchInput}
+                                    onChange={e => setNewsSearchInput(e.target.value.toUpperCase())}
+                                    placeholder="Search ticker news"
+                                    disabled={newsLoading}
+                                    style={{ paddingLeft: '2rem', fontSize: '0.8rem', textTransform: 'uppercase' }}
+                                />
+                            </div>
+                            <button className="btn btn-xs btn-ghost" type="submit" disabled={newsLoading || !newsSearchInput.trim()}>Search</button>
+                            {newsSearchTicker && (
+                                <button className="btn btn-xs btn-ghost" type="button" onClick={clearNewsSearch} disabled={newsLoading} title="Clear ticker search">
+                                    <X size={12} />
+                                </button>
+                            )}
+                        </form>
+                        <button className="btn btn-xs btn-ghost" onClick={() => { cachedMoverNews.clear(); setNewsMoverLimit(NEWS_MOVER_PAGE_SIZE); setNewsRefreshToken(t => t + 1); setNewsVisibleCount(12); }} disabled={newsLoading} title="Refresh headlines">
+                            <RefreshCw size={13} /> Refresh
+                        </button>
                     </div>
                     {newsStatus && (
                         <div style={{ padding: '0.55rem 1rem', borderBottom: '1px solid var(--border-subtle)', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                             {newsStatus}
                         </div>
                     )}
-                    {coreMovers.length === 0 ? (
+                    {newsMovers.length === 0 ? (
                         <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>Finish loading movers to identify core news.</div>
                     ) : newsItems.length > 0 ? (
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '0.75rem', padding: '1rem' }}>
-                            {newsItems.map((article, i) => (
-                                <a key={`${article.mover.ticker}-${i}-${article.title}`} href={article.link || '#'} target="_blank" rel="noreferrer" className="terminal-card" style={{ padding: '0.85rem', textDecoration: 'none', color: 'inherit', border: '1px solid var(--border-subtle)' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', marginBottom: '0.45rem' }}>
-                                        <span className={`badge ${article.mover.direction === 'highest' ? 'badge-green' : 'badge-red'}`} style={{ fontSize: '0.68rem' }}>
-                                            {article.mover.ticker} {article.mover.change_percent >= 0 ? '+' : ''}{article.mover.change_percent?.toFixed(2)}%
-                                        </span>
-                                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{formatDate(article.published)}</span>
-                                    </div>
-                                    <div style={{ fontWeight: 700, fontSize: '0.86rem', lineHeight: 1.35 }}>{article.title}</div>
-                                    <div style={{ marginTop: '0.55rem', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                                        {article.publisher || 'Unknown'} · {article.mover.name}
-                                    </div>
-                                </a>
-                            ))}
-                        </div>
+                        <>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '0.75rem', padding: '1rem' }}>
+                                {visibleNewsItems.map((article, i) => (
+                                    <a key={`${article.mover.ticker}-${i}-${article.title}`} href={article.link || '#'} target="_blank" rel="noreferrer" className="terminal-card" style={{ padding: '0.85rem', textDecoration: 'none', color: 'inherit', border: '1px solid var(--border-subtle)' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', marginBottom: '0.45rem' }}>
+                                            <span className={`badge ${article.mover.direction === 'highest' ? 'badge-green' : article.mover.direction === 'lowest' ? 'badge-red' : 'badge-blue'}`} style={{ fontSize: '0.68rem' }}>
+                                                {article.mover.ticker} {article.mover.change_percent != null ? `${article.mover.change_percent >= 0 ? '+' : ''}${article.mover.change_percent?.toFixed(2)}%` : ''}
+                                            </span>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{formatDate(article.published)}</span>
+                                        </div>
+                                        <div style={{ fontWeight: 700, fontSize: '0.86rem', lineHeight: 1.35 }}>{article.title}</div>
+                                        <div style={{ marginTop: '0.55rem', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                                            {article.publisher || 'Unknown'} · {article.mover.name}
+                                        </div>
+                                    </a>
+                                ))}
+                            </div>
+                            {(newsVisibleCount < newsItems.length || (!newsSearchTicker && newsMoverLimit < maxNewsMoverCount)) && (
+                                <div style={{ padding: '0 1rem 1rem', textAlign: 'center' }}>
+                                    <button className="btn btn-sm btn-ghost" onClick={loadMoreNews} disabled={newsLoading}>
+                                        {newsVisibleCount < newsItems.length
+                                            ? `Show more headlines (${newsItems.length - newsVisibleCount} ready)`
+                                            : `Load next ${Math.min(NEWS_MOVER_PAGE_SIZE, maxNewsMoverCount - newsMoverLimit)} movers`}
+                                    </button>
+                                </div>
+                            )}
+                        </>
                     ) : (
                         <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                            {newsLoading ? `Loading core headlines...` : 'No recent headlines found for the highest and lowest movers.'}
+                            {newsLoading ? `Loading headlines...` : 'No recent headlines found for the selected tickers.'}
                         </div>
                     )}
                 </div>

@@ -919,6 +919,9 @@ def _render_insider_activity_answer(result: Dict[str, Any]) -> str:
     note = result.get("interpretation_note")
     if note:
         lines.append(note)
+    data_sources = result.get("data_sources") or []
+    if data_sources:
+        lines.append(f"Source: {', '.join(data_sources)}. I only report transactions returned by this feed; names, dates, prices, and amounts are not inferred.")
 
     if not rows and not notable:
         lines.append("")
@@ -957,14 +960,70 @@ def _render_insider_activity_answer(result: Dict[str, Any]) -> str:
         lines.append("Largest recent transactions:")
         for trade in notable[:6]:
             kind = str(trade.get("classified_as") or "transaction").replace("_", " ")
+            price = trade.get("price")
+            price_text = f"${float(price):.2f}" if isinstance(price, (int, float)) and math.isfinite(float(price)) else "price unavailable"
             lines.append(
                 f"- {trade.get('date') or 'date n/a'} {trade.get('ticker') or '?'}: "
                 f"{kind}, {trade.get('insider') or 'insider n/a'}, "
-                f"{trade.get('shares') or 'n/a'} shares at {_fmt_money(trade.get('value'))}."
+                f"{trade.get('shares') or 'n/a'} shares at {price_text}; value {_fmt_money(trade.get('value'))}."
             )
 
     lines.append("")
     lines.append("Use this as an insider-activity screen, not a standalone investment signal; sells can be routine, and grants/awards are compensation rather than open-market buying.")
+    return "\n".join(lines)
+
+
+def _classify_insider_trade_for_answer(trade: Dict[str, Any]) -> str:
+    tx_type = str(trade.get("transaction_type") or "").lower()
+    tx_text = " ".join(str(trade.get(key) or "") for key in ("last_tx", "text", "ownership_change")).lower()
+    try:
+        price = float(trade.get("price") or 0)
+    except Exception:
+        price = 0
+    if price == 0 or "award" in tx_text or "grant" in tx_text:
+        return "grant/award"
+    if "sell" in tx_type or "sale" in tx_text or "disposed" in tx_text:
+        return "open-market sell"
+    if "buy" in tx_type or "purchase" in tx_text or "acq" in tx_text:
+        return "open-market buy"
+    return "other"
+
+
+def _render_insider_trades_answer(result: Dict[str, Any]) -> str:
+    trades = result.get("trades") or []
+    total = result.get("total")
+    tickers = sorted({str(t.get("ticker") or "").upper() for t in trades if t.get("ticker")})
+    ticker_text = f" for {', '.join(tickers)}" if tickers else ""
+    source_note = "Source: TradingSpy insider feed from yfinance insider transaction tables; not independently SEC-verified in this response."
+    lines = [
+        f"I found {len(trades)} returned insider transaction(s){f' out of {total} total' if total is not None else ''}{ticker_text}.",
+        source_note,
+        "I am only reporting records returned by the data feed below; no names, dates, prices, or amounts are inferred.",
+    ]
+    if result.get("error"):
+        lines.append(f"Feed error: {result.get('error')}")
+    if not trades:
+        lines.append("")
+        lines.append("No insider transactions were returned for that request. I will not fill gaps from memory.")
+        return "\n".join(lines).strip()
+
+    lines.append("")
+    lines.append("Returned transactions:")
+    for trade in trades[:20]:
+        kind = _classify_insider_trade_for_answer(trade)
+        price = trade.get("price")
+        value = trade.get("value")
+        portfolio_pct = trade.get("portfolio_pct")
+        price_text = f"${float(price):.2f}" if isinstance(price, (int, float)) and math.isfinite(float(price)) else "price unavailable"
+        value_text = _fmt_money(value) if value not in (None, "") else "value unavailable"
+        pct_text = f"; {portfolio_pct}% of reported holdings" if portfolio_pct not in (None, "") else ""
+        lines.append(
+            f"- {trade.get('date') or 'date unavailable'} {trade.get('ticker') or '?'}: "
+            f"{kind}, {trade.get('insider') or 'insider unavailable'}, "
+            f"{trade.get('shares') or 'shares unavailable'} shares at {price_text}, {value_text}{pct_text}."
+        )
+    lines.append("")
+    lines.append("Awards/grants are compensation events and are not treated as insider buy signals.")
     return "\n".join(lines)
 
 
@@ -1046,6 +1105,8 @@ def normalize_provider(provider: Optional[str]) -> str:
         "google_ai": "google_ai_studio",
         "gemini": "google_ai_studio",
         "google_gemini": "google_ai_studio",
+        "lite_llm": "litellm",
+        "lite": "litellm",
         "vertex": "gcp",
         "vertex_ai": "gcp",
         "google_vertex_ai": "gcp",
@@ -1073,6 +1134,8 @@ def normalize_model(provider: str, model: Optional[str]) -> str:
         return m or "gemini-1.5-pro"
     if provider == "openrouter":
         return m or "openai/gpt-4o-mini"
+    if provider == "litellm":
+        return m or "gpt-4o-mini"
     return m or "gemini-2.5-flash"
 
 def normalize_provider_for_model(provider: Optional[str], model: Optional[str]) -> str:
@@ -1083,7 +1146,7 @@ def normalize_provider_for_model(provider: Optional[str], model: Optional[str]) 
         return "google_ai_studio"
     return normalized
 
-APP_LLM_PROVIDERS = {"google_ai_studio", "mistral", "openrouter"}
+APP_LLM_PROVIDERS = {"google_ai_studio", "mistral", "openrouter", "litellm"}
 
 def normalize_app_llm_provider(provider: Optional[str]) -> str:
     """Provider choices exposed in the product UI after validation."""
@@ -1123,7 +1186,7 @@ def resolve_provider_credentials(provider: str, api_key: str = None, provider_co
     if provider == "litellm":
         return {
             "api_key": api_key or _provider_config_value(cfg, settings, "litellm_api_key", "LITELLM_API_KEY") or "not-needed",
-            "base_url": _provider_config_value(cfg, settings, "litellm_base_url", "LITELLM_BASE_URL", "http://localhost:4000"),
+            "base_url": _provider_config_value(cfg, settings, "litellm_base_url", "LITELLM_BASE_URL", "http://localhost:4000/v1"),
         }
     if provider == "mistral":
         return {"api_key": api_key or _provider_config_value(cfg, settings, "mistral_api_key", "MISTRAL_API_KEY")}
@@ -6727,6 +6790,7 @@ async def get_settings():
     raw_model = visible.get("default_model") if raw_provider_supported else None
     env_model = os.getenv("DEFAULT_MODEL") if raw_provider_supported else None
     visible["default_model"] = raw_model or normalize_model(visible["default_provider"], env_model)
+    visible["litellm_base_url"] = visible.get("litellm_base_url") or os.getenv("LITELLM_BASE_URL") or "http://localhost:4000/v1"
     visible["remote_agent_auth_token_configured"] = bool(_remote_agent_token(data))
     for key in KEY_FIELDS:
         env_key = key.upper()
@@ -9077,6 +9141,26 @@ UNIFIED ASSISTANT CONFIG:
                 return
 
             simple_message = (request.message or "").strip().lower()
+            recent_history_text = "\n".join(
+                str(item.get("content") or "").lower()
+                for item in (request.history or [])[-8:]
+                if isinstance(item, dict)
+            )
+            insider_terms = (
+                "insider buy", "insider buys", "insider buying",
+                "insider sell", "insider sells", "insider selling",
+                "insider trade", "insider trades", "insider trading",
+                "insider activity", "insider transactions",
+            )
+            insider_followup_terms = (
+                "key buy", "key buys", "any buy", "any buys", "buy?", "buys?",
+                "selling?", "sell?", "sold?", "purchase?", "purchases?",
+                "what price", "how much", "what percentage",
+            )
+            is_insider_activity_request = (
+                any(term in simple_message for term in insider_terms)
+                or ("insider" in recent_history_text and any(term in simple_message for term in insider_followup_terms))
+            )
             if simple_message in {"hi", "hello", "hey", "yo", "hiya"}:
                 response_text = "Hi. I can help with market analysis, news, strategy generation, data downloads, backtests, and optimization. What do you want to look at?"
                 quick_step = {
@@ -9122,6 +9206,21 @@ UNIFIED ASSISTANT CONFIG:
             except Exception as tool_select_error:
                 logger.warning(f"Tool selection failed or timed out; falling back to direct response: {tool_select_error}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'thinking', 'content': 'Tool selection did not return in time; answering directly...'})}\n\n"
+                if is_insider_activity_request:
+                    response_text = (
+                        "I could not verify insider transactions because the data-tool selection timed out. "
+                        "I will not guess insider names, dates, prices, or amounts. Please retry the insider scan."
+                    )
+                    direct_step = {
+                        "label": "Insider data unavailable",
+                        "status": "error",
+                        "comment": "Tool selection timed out",
+                        "note": "No insider trades reported without data",
+                    }
+                    yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
+                    yield f"data: {json.dumps({'type': 'step', 'step': direct_step})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'thinking': 'Insider answer blocked because no verified data source completed.', 'steps': [direct_step], 'tools_used': [], 'data': {}, 'triggered_tasks': []})}\n\n"
+                    return
                 response_text = await call_llm(
                     provider=provider,
                     model=model,
@@ -9181,6 +9280,21 @@ UNIFIED ASSISTANT CONFIG:
                 if len(tool_calls) != len(getattr(response, "tool_calls", []) or []):
                     if thinking_detail != "brief":
                         yield f"data: {json.dumps({'type': 'thinking', 'content': 'Added required market breadth and news checks for a market-driver question...'})}\n\n"
+
+            if is_insider_activity_request:
+                existing_tool_names = {_normalize_agent_tool_name(tc.get("name")) for tc in tool_calls if isinstance(tc, dict)}
+                if not {"get_insider_trades", "screen_industry_insider_activity"}.intersection(existing_tool_names):
+                    focus = "all"
+                    if any(term in simple_message for term in ("buy", "buys", "buying", "purchase", "purchases")):
+                        focus = "buys"
+                    elif any(term in simple_message for term in ("sell", "sells", "selling", "sold")):
+                        focus = "sells"
+                    tool_calls.append({
+                        "name": "screen_industry_insider_activity",
+                        "args": {"universe": "default", "days_back": 30, "max_checked": 30, "focus": focus},
+                    })
+                    if thinking_detail != "brief":
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': 'Added an insider-activity data check so the answer stays grounded in returned transactions...'})}\n\n"
             
             # Check if LLM wants to call tools
             if tool_calls:
@@ -9417,6 +9531,8 @@ UNIFIED ASSISTANT CONFIG:
                     deterministic_tool_answer = _render_screen_undervalued_answer(tool_data["screen_undervalued_stocks"])
                 elif "screen_industry_insider_activity" in tool_data:
                     deterministic_tool_answer = _render_insider_activity_answer(tool_data["screen_industry_insider_activity"])
+                elif is_insider_activity_request and "get_insider_trades" in tool_data:
+                    deterministic_tool_answer = _render_insider_trades_answer(tool_data["get_insider_trades"])
                 
                 # Only add AIMessage if response has content
                 if hasattr(response, 'content') and response.content:

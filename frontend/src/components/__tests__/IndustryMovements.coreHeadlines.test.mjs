@@ -28,8 +28,21 @@ test('core headline cards render when headlines are loaded even if movers are st
         false,
         'headline rendering must not be blocked by the global movers loading flag once newsItems exist',
     );
-    assert.match(source, /coreMovers\.length === 0 \? \(/);
+    assert.match(source, /newsMovers\.length === 0 \? \(/);
     assert.match(source, /newsItems\.length > 0 \? \(/);
+});
+
+test('market mover headlines can expand scope, depth, ticker search, and visible pagination', () => {
+    assert.match(source, /const NEWS_MOVER_PAGE_SIZE = 6;/);
+    assert.match(source, /const \[newsMoverLimit, setNewsMoverLimit\] = useState\(NEWS_MOVER_PAGE_SIZE\);/);
+    assert.match(source, /const \[newsPerTicker, setNewsPerTicker\] = useState\(1\);/);
+    assert.match(source, /const \[newsSearchTicker, setNewsSearchTicker\] = useState\(''\);/);
+    assert.match(source, /\[1, 3, 5\]\.map\(count => \(/);
+    assert.match(source, /news-titles\?limit=\$\{newsPerTicker\}/);
+    assert.match(source, /const visibleNewsItems = newsItems\.slice\(0, newsVisibleCount\);/);
+    assert.match(source, /const loadMoreNews = \(\) => \{/);
+    assert.match(source, /setNewsMoverLimit\(count => Math\.min\(count \+ NEWS_MOVER_PAGE_SIZE, maxNewsMoverCount\)\)/);
+    assert.match(source, /Load next/);
 });
 
 test('market mover prices are fetched in chunks so loading progress can advance', () => {
@@ -88,7 +101,7 @@ test('backend peer resolver avoids broad web-search ticker extraction', () => {
 });
 
 test('backend market movers report cumulative intraday volume and use fresh cache key', () => {
-    assert.match(backendSource, /batch_price_changes:\{period\}:\{interval or 'auto'\}:ext=\{int\(extended\)\}:v2:/);
+    assert.match(backendSource, /batch_price_changes:\{period\}:\{interval or 'auto'\}:ext=\{int\(extended\)\}:v3:/);
     assert.match(backendSource, /volume = vol_vals\.sum\(\) if len\(vol_vals\) > 0 else None/);
     assert.equal(
         backendSource.includes('volume = vol_vals[-1] if len(vol_vals) > 0 else None'),

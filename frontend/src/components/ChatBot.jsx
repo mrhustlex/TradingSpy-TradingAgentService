@@ -17,6 +17,7 @@ const API_PROVIDERS = [
     { value: 'google_ai_studio', label: 'Google AI Studio' },
     { value: 'mistral', label: 'Mistral' },
     { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'litellm', label: 'LiteLLM' },
 ];
 const API_PROVIDER_VALUES = new Set(API_PROVIDERS.map(provider => provider.value));
 const API_KEY_STORAGE = {
@@ -25,6 +26,7 @@ const API_KEY_STORAGE = {
     googleaistudio: 'settings_google_ai_studio_api_key',
     gemini: 'settings_google_ai_studio_api_key',
     mistral: 'settings_mistral_api_key',
+    litellm: 'settings_litellm_api_key',
 };
 const AGENT_TERMINAL_STATUSES = ['completed', 'failed', 'stopped', 'stale'];
 const isAgentTerminalStatus = (status) => AGENT_TERMINAL_STATUSES.includes(status);
@@ -86,11 +88,13 @@ const MiniChart = React.memo(function MiniChart({ symbol, bars }) {
 const normalizeProvider = (provider) => {
     const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
     if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
+    if (p === 'lite_llm' || p === 'lite') return 'litellm';
     return API_PROVIDER_VALUES.has(p) ? p : DEFAULT_PROVIDER;
 };
 const isSupportedProviderInput = (provider) => {
     const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
-    const normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    let normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
+    if (normalized === 'lite_llm' || normalized === 'lite') normalized = 'litellm';
     return API_PROVIDER_VALUES.has(normalized);
 };
 
@@ -132,6 +136,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     // Read the active API key from localStorage based on provider
     const getActiveApiKey = (provider) => {
         const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
+        if (p === 'litellm' && localStorage.getItem('settings_litellm_base_url')) return true;
         const keyStorage = API_KEY_STORAGE[p] || API_KEY_STORAGE[DEFAULT_PROVIDER];
         const storedKey = localStorage.getItem(keyStorage) || null;
         const serverConfigured = localStorage.getItem(`${keyStorage}_configured`) === 'true';
@@ -154,6 +159,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         if (p === 'openrouter') cfg.openrouter_api_key = localStorage.getItem('settings_openrouter_api_key') || '';
         if (p === 'google_ai_studio') cfg.google_ai_studio_api_key = localStorage.getItem('settings_google_ai_studio_api_key') || '';
         if (p === 'mistral') cfg.mistral_api_key = localStorage.getItem('settings_mistral_api_key') || '';
+        if (p === 'litellm') {
+            cfg.litellm_api_key = localStorage.getItem('settings_litellm_api_key') || '';
+            cfg.litellm_base_url = localStorage.getItem('settings_litellm_base_url') || '';
+        }
         return Object.fromEntries(Object.entries(cfg).filter(([, value]) => value !== ''));
     };
     const hasConfiguredApiKey = (provider) => {
@@ -224,6 +233,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             provider,
             model: isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
             apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
+            litellmBaseUrl: localStorage.getItem('settings_litellm_base_url') || 'http://localhost:4000/v1',
         };
     });
     
@@ -244,6 +254,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         }));
     };
     const messagesEndRef = useRef(null);
+    const messagesScrollRef = useRef(null);
+    const shouldStickToBottomRef = useRef(true);
     const agentPollFailureRef = useRef(0);
 
     // Get current thread's streaming state
@@ -284,8 +296,16 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     }, [activeThread?.messages]);
     const isLoading = isStreaming; // alias for compatibility
 
-    useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); },
-        [activeThread?.messages, streamingMessage]);
+    const handleMessagesScroll = () => {
+        const el = messagesScrollRef.current;
+        if (!el) return;
+        shouldStickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+    };
+
+    useEffect(() => {
+        if (!shouldStickToBottomRef.current) return;
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [activeThread?.messages, streamingMessage]);
 
     useEffect(() => {
         axios.get(SETTINGS_URL).then(res => {
@@ -322,6 +342,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             provider,
             model: isSupportedProviderInput(rawProvider) ? (aiConfig.model || localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
             apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
+            litellmBaseUrl: localStorage.getItem('settings_litellm_base_url') || 'http://localhost:4000/v1',
         });
     }, [apiPanelOpen, aiConfig.provider, aiConfig.model]);
 
@@ -382,6 +403,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         const keyStorage = API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER];
         if (apiDraft.apiKey?.trim()) {
             localStorage.setItem(keyStorage, apiDraft.apiKey.trim());
+        }
+        if (provider === 'litellm') {
+            localStorage.setItem('settings_litellm_base_url', apiDraft.litellmBaseUrl?.trim() || 'http://localhost:4000/v1');
         }
         setAiConfig({ provider, model });
         window.dispatchEvent(new CustomEvent('tradingspy:llm-settings-updated'));
@@ -630,14 +654,54 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         if (agentRun?.run_id === targetRunId) setAgentRun(stoppedRun);
         onAgentRunUpdate?.(stoppedRun);
         updateAgentRunMessages(stoppedRun);
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
         try {
-            await axios.post(`${API_BASE}/agent/runs/${targetRunId}/stop`);
+            let stopResponse = null;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                try {
+                    stopResponse = await axios.post(`${API_BASE}/agent/runs/${targetRunId}/stop`);
+                    break;
+                } catch (error) {
+                    if (attempt === 2) throw error;
+                    await sleep(700 * (attempt + 1));
+                }
+            }
+            if (stopResponse?.data?.run_id) {
+                setAgentRun(stopResponse.data);
+                onAgentRunUpdate?.(stopResponse.data);
+                updateAgentRunMessages(stopResponse.data);
+            }
             const res = await axios.get(`${API_BASE}/agent/runs/${targetRunId}`);
             setAgentRun(res.data);
             onAgentRunUpdate?.(res.data);
             updateAgentRunMessages(res.data);
         } catch (e) {
-            notify?.('Failed to stop agent run', 'red');
+            setAgentConnectionIssue('Stop request could not reach the backend. Automatic polling will keep retrying; use Retry now when the backend is reachable.');
+            notify?.('Could not confirm agent stop with the backend.', 'yellow');
+        }
+    };
+
+    const refreshAgentRun = async (runId = null) => {
+        const targetRunId = runId || agentRun?.run_id;
+        if (!targetRunId) return;
+        setAgentRunLoading(true);
+        try {
+            const res = await axios.get(`${API_BASE}/agent/runs/${targetRunId}`);
+            agentPollFailureRef.current = 0;
+            setAgentConnectionIssue('');
+            setAgentRun(res.data);
+            onAgentRunUpdate?.(res.data);
+            updateAgentRunMessages(res.data);
+        } catch (e) {
+            agentPollFailureRef.current += 1;
+            setAgentConnectionIssue(
+                navigator.onLine === false
+                    ? 'Browser is offline. The backend run may still be active and will refresh after reconnect.'
+                    : 'Still cannot reach the backend. Automatic polling will keep retrying.'
+            );
+            notify?.('Still cannot reach the backend for this agent run.', 'yellow');
+        } finally {
+            setAgentRunLoading(false);
         }
     };
 
@@ -2888,7 +2952,15 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                             fontSize: '0.72rem',
                             lineHeight: 1.45,
                         }}>
-                            {connectionIssue}
+                            <div>{connectionIssue}</div>
+                            <button
+                                className="btn btn-ghost btn-xs"
+                                onClick={() => refreshAgentRun(run.run_id)}
+                                disabled={agentRunLoading}
+                                style={{ marginTop: '0.45rem', color: 'var(--brand-yellow)' }}
+                            >
+                                <RefreshCw size={11} /> Retry now
+                            </button>
                         </div>
                     )}
                     {latestActivity && (
@@ -3156,6 +3228,14 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 <div className="terminal-card" style={{ padding: '0.75rem', marginBottom: '0.75rem', borderColor: 'rgba(234,179,8,0.3)', background: 'rgba(234,179,8,0.045)' }}>
                                     <div style={{ fontSize: '0.72rem', fontWeight: 800, color: 'var(--brand-yellow)', marginBottom: '0.4rem' }}>CONNECTION</div>
                                     <div style={{ fontSize: '0.76rem', lineHeight: 1.5, opacity: 0.78 }}>{agentConnectionIssue}</div>
+                                    <button
+                                        className="btn btn-ghost btn-xs"
+                                        onClick={() => refreshAgentRun(agentRun.run_id)}
+                                        disabled={agentRunLoading}
+                                        style={{ marginTop: '0.55rem', color: 'var(--brand-yellow)' }}
+                                    >
+                                        <RefreshCw size={11} /> Retry now
+                                    </button>
                                 </div>
                             )}
 
@@ -3732,11 +3812,21 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 </div>
 
                 {/* messages */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem 1.5rem' }}>
+                <div
+                    ref={messagesScrollRef}
+                    onScroll={handleMessagesScroll}
+                    style={{ flex: 1, overflowY: 'auto', padding: '1rem 1.5rem' }}
+                >
                     <AnimatePresence>
                         {activeThread?.messages.map(message => {
                             const assistantMessage = isAssistantMessage(message);
                             const userMessage = isUserMessage(message);
+                            const liveTraceVisible = showLiveThinking && assistantMessage && (
+                                message.reasoning ||
+                                message.steps?.filter(s => s.status !== 'info').length > 0 ||
+                                message.commentary?.length > 0 ||
+                                message.id === currentStreamingId
+                            );
                             return (
                             <motion.div key={message.id}
                                 initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
@@ -3774,7 +3864,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                             ↳ Reply to message
                                         </div>
                                     )}
-                                    {showLiveThinking && assistantMessage && (message.reasoning || message.steps?.filter(s => s.status !== 'info').length > 0 || message.commentary?.length > 0 || message.id === currentStreamingId) && renderReactTrace(message)}
+                                    {liveTraceVisible && renderReactTrace(message)}
 
                                     {/* message bubble — now always at the bottom */}
                                     <div style={{
@@ -3827,7 +3917,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                                 <span style={{ fontSize: '0.86rem' }}>
                                                     {message.id === currentStreamingId ? (agentProgress?.label || 'Thinking...') : 'Waiting for response...'}
                                                 </span>
-                                                {isAssistantBusy && (
+                                                {isAssistantBusy && !liveTraceVisible && (
                                                     <button onClick={stopStreaming} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '5px', cursor: 'pointer', padding: '0.2rem 0.55rem', color: 'rgb(239,68,68)', fontSize: '0.75rem', fontWeight: 600, marginLeft: 'auto' }}>
                                                         <Square size={9} fill="currentColor" /> Stop
                                                     </button>
@@ -4072,6 +4162,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                     ...prev,
                                     provider,
                                     apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
+                                    litellmBaseUrl: localStorage.getItem('settings_litellm_base_url') || 'http://localhost:4000/v1',
                                 }));
                             }}
                             style={{ width: '100%', marginBottom: '0.8rem' }}
@@ -4111,6 +4202,18 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 ? 'A server/environment key is configured but hidden. Leave this blank to use it, or type a browser-local override.'
                                 : 'Saved in this browser only. It is not shown again on other browsers or devices.'}
                         </div>
+                        {normalizeProvider(apiDraft.provider) === 'litellm' && (
+                            <>
+                                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '0.4rem' }}>LiteLLM base URL</label>
+                                <input
+                                    className="input"
+                                    value={apiDraft.litellmBaseUrl}
+                                    onChange={(e) => setApiDraft(prev => ({ ...prev, litellmBaseUrl: e.target.value }))}
+                                    placeholder="http://localhost:4000/v1"
+                                    style={{ width: '100%', marginBottom: '1rem' }}
+                                />
+                            </>
+                        )}
                         <div style={{ background: 'var(--bg-accent)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '0.75rem', marginBottom: '1rem', fontSize: '0.75rem', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
                             <strong style={{ color: 'var(--text-primary)' }}>Active route:</strong> {API_PROVIDERS.find(item => item.value === normalizeProvider(apiDraft.provider))?.label || apiDraft.provider} → {apiDraft.model || 'model not set'}<br />
                             Browser-local keys are sent to the TradingSpy backend with each assistant request. Server keys remain hidden from the browser.
