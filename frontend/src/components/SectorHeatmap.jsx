@@ -11,7 +11,36 @@ const DEFAULT_TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA'
 const PAGE_SIZE = 30;
 const STOCK_BATCH_SIZE = 20;
 const STOCK_BATCH_CONCURRENCY = 4;
+const ETF_QUOTE_BATCH_SIZE = 8;
+const ETF_QUOTE_BATCH_CONCURRENCY = 3;
 const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'XLK', 'SMH', 'IGV', 'FDN', 'XLF', 'KBE', 'KRE', 'XLV', 'XBI', 'IHI', 'XLE', 'OIH', 'XOP', 'XLY', 'XLP', 'XRT', 'XLI', 'XLB', 'XLRE', 'RWR', 'XLU', 'XLC'];
+const INDUSTRY_PROXY_META = {
+    SPY: { name: 'S&P 500', sector: 'Broad Market', industry: 'Large Cap' },
+    QQQ: { name: 'NASDAQ 100', sector: 'Broad Market', industry: 'Tech/Growth' },
+    IWM: { name: 'Russell 2000', sector: 'Broad Market', industry: 'Small Cap' },
+    XLK: { name: 'Technology Select', sector: 'Technology', industry: 'Broad Technology' },
+    SMH: { name: 'Semiconductors', sector: 'Technology', industry: 'Semiconductors' },
+    IGV: { name: 'Software', sector: 'Technology', industry: 'Software' },
+    FDN: { name: 'Internet', sector: 'Technology', industry: 'Internet' },
+    XLF: { name: 'Financial Select', sector: 'Financial Services', industry: 'Broad Financials' },
+    KBE: { name: 'Bank ETF', sector: 'Financial Services', industry: 'Banks' },
+    KRE: { name: 'Regional Banks', sector: 'Financial Services', industry: 'Regional Banks' },
+    XLV: { name: 'Healthcare Select', sector: 'Healthcare', industry: 'Broad Healthcare' },
+    XBI: { name: 'Biotech', sector: 'Healthcare', industry: 'Biotechnology' },
+    IHI: { name: 'Medical Devices', sector: 'Healthcare', industry: 'Medical Devices' },
+    XLE: { name: 'Energy Select', sector: 'Energy', industry: 'Broad Energy' },
+    OIH: { name: 'Oil Services', sector: 'Energy', industry: 'Oil Services' },
+    XOP: { name: 'Oil & Gas E&P', sector: 'Energy', industry: 'Oil Exploration' },
+    XLY: { name: 'Consumer Disc.', sector: 'Consumer Cyclical', industry: 'Broad Discretionary' },
+    XLP: { name: 'Consumer Staples', sector: 'Consumer Defensive', industry: 'Broad Staples' },
+    XRT: { name: 'Retail', sector: 'Consumer Cyclical', industry: 'Retail' },
+    XLI: { name: 'Industrial Select', sector: 'Industrials', industry: 'Broad Industrials' },
+    XLB: { name: 'Materials Select', sector: 'Basic Materials', industry: 'Broad Materials' },
+    XLRE: { name: 'Real Estate Select', sector: 'Real Estate', industry: 'Broad Real Estate' },
+    RWR: { name: 'REIT ETF', sector: 'Real Estate', industry: 'REITs' },
+    XLU: { name: 'Utilities Select', sector: 'Utilities', industry: 'Broad Utilities' },
+    XLC: { name: 'Comm. Services', sector: 'Communication Services', industry: 'Broad Communication' },
+};
 
 const PERIOD_OPTIONS = ['1min','5min','15min','30min','1h', '1d','5d','1mo','3mo','6mo','1y','2y','5y','10y','ytd','max'];
 const INTRADAY_INTERVAL = { '1min':'1m', '5min':'5m', '15min':'15m', '30min':'30m', '1h':'60m' };
@@ -134,6 +163,31 @@ const mergeSectorData = (base = {}, incoming = {}) => {
     return merged;
 };
 
+const buildIndustryProxySectors = (quotes = []) => {
+    const sectors = {};
+    for (const quote of quotes || []) {
+        const ticker = String(quote?.symbol || quote?.ticker || '').toUpperCase();
+        if (!ticker) continue;
+        const meta = INDUSTRY_PROXY_META[ticker] || { name: ticker, sector: 'ETF', industry: ticker };
+        if (!sectors[meta.sector]) sectors[meta.sector] = {};
+        if (!sectors[meta.sector][meta.industry]) sectors[meta.sector][meta.industry] = [];
+        sectors[meta.sector][meta.industry].push({
+            ticker,
+            name: meta.name,
+            price: quote.price,
+            change: quote.change,
+            change_percent: quote.change_percent != null ? Number(quote.change_percent) : null,
+            market_cap: quote.market_cap,
+            volume: quote.volume,
+            avg_daily_move_pct: quote.avg_daily_move_pct,
+            move_strength: quote.move_strength,
+            avg_volume: quote.avg_volume,
+            session: quote.session,
+        });
+    }
+    return sectors;
+};
+
 const normalizeIndices = (indices) => {
     if (Array.isArray(indices)) return indices;
     return Object.entries(indices || {}).map(([symbol, data]) => ({ symbol, ...data }));
@@ -247,22 +301,36 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                     ...extraEtfs,
                 ])];
                 setSectors({});
-                const industryPromise = axios.post(`${INTELLIGENCE_SERVICE}/industry-heatmap?${params}${ext}`, INDUSTRY_PROXY_TICKERS)
-                    .then(res => {
-                        if (!isCurrentRequest()) return null;
-                        newSectors = res.data.sectors || {};
-                        setSectors(newSectors);
+                const batches = chunkArray(INDUSTRY_PROXY_TICKERS, ETF_QUOTE_BATCH_SIZE);
+                let completed = 0;
+                let cursor = 0;
+                let accumulated = {};
+                const fetchIndustryBatch = async (batch) => {
+                    if (!isCurrentRequest()) return;
+                    try {
+                        const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}${ext}`, batch);
+                        if (!isCurrentRequest()) return;
+                        accumulated = mergeSectorData(accumulated, buildIndustryProxySectors(res.data.quotes || []));
+                        setSectors(accumulated);
+                    } catch (e) {
+                        console.warn('Industry ETF quote batch failed', batch, e);
+                    } finally {
+                        if (!isCurrentRequest()) return;
+                        completed += batch.length;
                         setHeatmapProgress({
-                            completed: INDUSTRY_PROXY_TICKERS.length,
+                            completed: Math.min(completed, INDUSTRY_PROXY_TICKERS.length),
                             total: INDUSTRY_PROXY_TICKERS.length,
-                            label: `Loaded ${INDUSTRY_PROXY_TICKERS.length} ETF proxies`,
+                            label: `Loaded ${Math.min(completed, INDUSTRY_PROXY_TICKERS.length)} of ${INDUSTRY_PROXY_TICKERS.length} ETF proxies`,
                         });
-                        return newSectors;
-                    })
-                    .catch(e => {
-                        console.warn('Industry heatmap fetch failed', e);
-                        return {};
-                    });
+                    }
+                };
+                const industryPromise = Promise.all(Array.from({ length: Math.min(ETF_QUOTE_BATCH_CONCURRENCY, batches.length) }, async () => {
+                    while (cursor < batches.length) {
+                        const batch = batches[cursor];
+                        cursor += 1;
+                        await fetchIndustryBatch(batch);
+                    }
+                })).then(() => accumulated);
                 const customPromise = allCustomTickers.length > 0
                     ? axios.post(`${INTELLIGENCE_SERVICE}/sector-heatmap?${params}${ext}`, allCustomTickers).then(cres => {
                         if (!isCurrentRequest()) return null;
@@ -1914,7 +1982,14 @@ const IntelPanel = ({ ticker, onBacktestTicker, onExplain, onClose, notify }) =>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {insiderTrades.map((t, i) => (
+                                    {filteredInsiderTrades.length === 0 && (
+                                        <tr>
+                                            <td colSpan={9} style={{ textAlign: 'center', padding: '1.25rem', color: 'var(--text-muted)' }}>
+                                                No insider trades match the current filters.
+                                            </td>
+                                        </tr>
+                                    )}
+                                    {filteredInsiderTrades.map((t, i) => (
                                         <tr key={i}>
                                             <td style={{ fontSize: '0.68rem' }}>{t.date || '-'}</td>
                                             <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.insider}>{t.insider || '-'}</td>

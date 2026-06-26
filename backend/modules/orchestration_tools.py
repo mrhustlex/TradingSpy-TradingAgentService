@@ -241,14 +241,15 @@ def check_task_status(task_id: str) -> dict:
             
             return result
         elif response.status_code == 404:
-            # Task not found - might still be initializing, return running status
+            # Task state is created synchronously before the background job starts.
+            # A 404 therefore means the ID is invalid or has expired, not that it is
+            # safe to poll forever.
             return {
-                "success": True,
+                "success": False,
                 "task_id": task_id,
-                "status": "running",
-                "progress": 0,
-                "current": "Task initializing...",
-                "instruction": "Task is initializing. Call check_task_status again to check progress."
+                "status": "failed",
+                "error": "Task not found. It may have expired or the task ID is invalid.",
+                "instruction": "Do not poll this task again. Start a new task if the work is still needed."
             }
         return {"success": False, "error": f"HTTP {response.status_code}"}
     except Exception as e:

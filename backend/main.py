@@ -1040,12 +1040,19 @@ def _render_screen_undervalued_answer(result: Dict[str, Any]) -> str:
         f"{matched if matched is not None else len(candidates)} candidate(s)"
         f"{f' out of {checked} checked symbol(s)' if checked is not None else ''}."
     )
-    rules = (
-        f"Rules used: forward P/E <= {thresholds.get('max_forward_pe', 'n/a')}, "
-        f"PEG <= {thresholds.get('max_peg', 'n/a')}, "
-        f"P/S <= {thresholds.get('max_price_to_sales', 'n/a')}, "
-        f"revenue growth >= {_fmt_percent(thresholds.get('min_revenue_growth'))}."
-    )
+    rule_parts = [
+        f"forward P/E <= {thresholds.get('max_forward_pe', 'n/a')}",
+        f"PEG <= {thresholds.get('max_peg', 'n/a')}",
+        f"P/S <= {thresholds.get('max_price_to_sales', 'n/a')}",
+        f"revenue growth >= {_fmt_percent(thresholds.get('min_revenue_growth'))}",
+    ]
+    if thresholds.get("min_market_cap") is not None:
+        rule_parts.append(f"market cap >= {_fmt_money(thresholds.get('min_market_cap'))}")
+    if thresholds.get("max_market_cap") is not None:
+        rule_parts.append(f"market cap <= {_fmt_money(thresholds.get('max_market_cap'))}")
+    if thresholds.get("include_industry_terms"):
+        rule_parts.append(f"industry/sector matches {', '.join(thresholds.get('include_industry_terms') or [])}")
+    rules = f"Rules used: {'; '.join(rule_parts)}."
     freshness = f" Data as of {str(as_of).replace('T', ' ')[:19]}." if as_of else ""
 
     if not candidates:
@@ -9377,8 +9384,10 @@ UNIFIED ASSISTANT CONFIG:
                         tool_data[tool_name] = result
                         tools_used.append(tool_name)
                         
-                        # Check if this tool returned a task_id (async task)
-                        if isinstance(result, dict) and result.get("task_id"):
+                        # Only task-creating tools may register a background task.
+                        # Status tools also echo task_id, which must never start a
+                        # second polling loop or Task Center card.
+                        if tool_name in {"generate_strategy", "run_backtest", "download_market_data"} and isinstance(result, dict) and result.get("task_id"):
                             task_id = result["task_id"]
                             public_tool_name = _public_tool_label(tool_name)
                             task_label = f"{public_tool_name}: {result.get('ticker', result.get('strategy', 'Task'))}"
@@ -9772,8 +9781,9 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                                     tool_data[tool_name] = result
                                     tools_used_total.append(tool_name)
                                     
-                                    # Check for async tasks
-                                    if isinstance(result, dict) and result.get("task_id"):
+                                    # Only task-creating tools may register a background task.
+                                    # check_task_status returns the queried ID too.
+                                    if tool_name in {"generate_strategy", "run_backtest", "download_market_data"} and isinstance(result, dict) and result.get("task_id"):
                                         task_id = result["task_id"]
                                         task_label = f"{tool_name}: {result.get('ticker', result.get('strategy', 'Task'))}"
                                         

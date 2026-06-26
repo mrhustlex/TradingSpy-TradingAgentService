@@ -102,10 +102,32 @@ def _fundamental_requirements(requirements: str) -> dict:
     peg_match = re.search(r"peg\s*(?:under|below|less than|<)\s*(\d+(?:\.\d+)?)", text)
     ps_match = re.search(r"(?:price\s*[/ ]?\s*sales|p/s)\s*(?:under|below|less than|<)\s*(\d+(?:\.\d+)?)", text)
     revenue_match = re.search(r"revenue growth\s*(?:>|over|above|at least)\s*(\d+(?:\.\d+)?)\s*%?", text)
+    market_cap_under_match = (
+        re.search(r"(?:market\s*cap|mkt\s*cap|capitalization)\s*(?:under|below|less than|<)\s*\$?\s*(\d+(?:\.\d+)?)\s*(t|trillion|b|bn|billion|m|mm|million)?", text)
+        or re.search(r"(?:under|below|less than|<)\s*\$?\s*(\d+(?:\.\d+)?)\s*(t|trillion|b|bn|billion|m|mm|million)?\s*(?:market\s*cap|mkt\s*cap|capitalization)", text)
+    )
+    market_cap_over_match = (
+        re.search(r"(?:market\s*cap|mkt\s*cap|capitalization)\s*(?:over|above|greater than|at least|>)\s*\$?\s*(\d+(?:\.\d+)?)\s*(t|trillion|b|bn|billion|m|mm|million)?", text)
+        or re.search(r"(?:over|above|greater than|at least|>)\s*\$?\s*(\d+(?:\.\d+)?)\s*(t|trillion|b|bn|billion|m|mm|million)?\s*(?:market\s*cap|mkt\s*cap|capitalization)", text)
+    )
     max_forward_pe = 20 if strict else (35 if growth else 25)
     max_peg = 1.5 if strict else 2.2
     max_price_to_sales = 4 if strict else (12 if growth else 6)
     min_revenue_growth = 0.05 if growth else 0
+    max_market_cap = None
+    min_market_cap = None
+
+    def parse_market_cap(match):
+        if not match:
+            return None
+        value = float(match.group(1))
+        unit = (match.group(2) or "b").lower()
+        if unit in ("t", "trillion"):
+            return value * 1_000_000_000_000
+        if unit in ("m", "mm", "million"):
+            return value * 1_000_000
+        return value * 1_000_000_000
+
     if forward_pe_match:
         max_forward_pe = float(forward_pe_match.group(1))
     if peg_match:
@@ -115,11 +137,48 @@ def _fundamental_requirements(requirements: str) -> dict:
     if revenue_match:
         raw_growth = float(revenue_match.group(1))
         min_revenue_growth = raw_growth / 100 if raw_growth > 1 else raw_growth
+    if market_cap_under_match:
+        max_market_cap = parse_market_cap(market_cap_under_match)
+    if market_cap_over_match:
+        min_market_cap = parse_market_cap(market_cap_over_match)
+    if "small cap" in text or "small-cap" in text:
+        max_market_cap = max_market_cap or 2_000_000_000
+    if "mid cap" in text or "mid-cap" in text:
+        min_market_cap = min_market_cap or 2_000_000_000
+        max_market_cap = max_market_cap or 10_000_000_000
+    if "large cap" in text or "large-cap" in text:
+        min_market_cap = min_market_cap or 10_000_000_000
+
+    industry_aliases = {
+        "semiconductor": ["semiconductor", "semiconductors"],
+        "software": ["software"],
+        "bank": ["bank", "banks", "banking"],
+        "regional bank": ["regional bank", "regional banks"],
+        "healthcare": ["healthcare", "health care"],
+        "biotech": ["biotech", "biotechnology"],
+        "energy": ["energy", "oil", "gas"],
+        "retail": ["retail"],
+        "industrial": ["industrial", "industrials"],
+        "materials": ["materials", "basic materials"],
+        "real estate": ["real estate", "reit", "reits"],
+        "utility": ["utility", "utilities"],
+        "consumer": ["consumer"],
+        "financial": ["financial", "financials"],
+        "technology": ["technology", "tech"],
+        "communication": ["communication", "communications", "telecom"],
+    }
+    include_terms = []
+    for canonical, aliases in industry_aliases.items():
+        if any(re.search(rf"\b{re.escape(alias)}\b", text) for alias in aliases):
+            include_terms.append(canonical)
     return {
         "max_forward_pe": max_forward_pe,
         "max_peg": max_peg,
         "max_price_to_sales": max_price_to_sales,
         "min_revenue_growth": min_revenue_growth,
+        "min_market_cap": min_market_cap,
+        "max_market_cap": max_market_cap,
+        "include_industry_terms": include_terms,
         "require_profit_margin": quality or strict,
         "prefer_dividend": dividend,
         "prefer_insiders": insider,
@@ -133,6 +192,19 @@ def _metric_label(value, pct=False, digits=2):
     if pct:
         return f"{f * 100:.1f}%"
     return f"{f:.{digits}f}"
+
+
+def _market_cap_label(value):
+    f = _safe_float(value)
+    if f is None:
+        return "unavailable"
+    if abs(f) >= 1_000_000_000_000:
+        return f"${f / 1_000_000_000_000:.2f}T"
+    if abs(f) >= 1_000_000_000:
+        return f"${f / 1_000_000_000:.2f}B"
+    if abs(f) >= 1_000_000:
+        return f"${f / 1_000_000:.2f}M"
+    return f"${f:.0f}"
 
 
 def _ratio_to_pct(value):
@@ -1577,6 +1649,34 @@ def screen_undervalued_stocks(
         target = _safe_float(fundamentals.get("target_mean_price"))
         price = _safe_float(quote.get("price")) or _safe_float(technicals.get("price"))
         analyst_upside = ((target - price) / price) if target and price else None
+        market_cap = _safe_float(fundamentals.get("market_cap")) or _safe_float(info.get("market_cap"))
+        sector = info.get("sector")
+        industry = info.get("industry")
+        sector_industry_text = f"{sector or ''} {industry or ''}".lower()
+
+        if req.get("include_industry_terms"):
+            terms = req["include_industry_terms"]
+            if not any(term in sector_industry_text for term in terms):
+                rejected.append({
+                    "symbol": symbol,
+                    "score": 0,
+                    "cautions": [f"sector/industry {sector or '-'} / {industry or '-'} did not match requested {', '.join(terms)}"],
+                })
+                continue
+        if req.get("min_market_cap") is not None and (market_cap is None or market_cap < req["min_market_cap"]):
+            rejected.append({
+                "symbol": symbol,
+                "score": 0,
+                "cautions": [f"market cap {_market_cap_label(market_cap)} below requested minimum {_market_cap_label(req['min_market_cap'])}"],
+            })
+            continue
+        if req.get("max_market_cap") is not None and (market_cap is None or market_cap > req["max_market_cap"]):
+            rejected.append({
+                "symbol": symbol,
+                "score": 0,
+                "cautions": [f"market cap {_market_cap_label(market_cap)} above requested maximum {_market_cap_label(req['max_market_cap'])}"],
+            })
+            continue
 
         score = 0
         reasons = []
@@ -1650,10 +1750,11 @@ def screen_undervalued_stocks(
         row = {
             "symbol": symbol,
             "name": fundamentals.get("name") or info.get("name") or symbol,
-            "sector": info.get("sector"),
-            "industry": info.get("industry"),
+            "sector": sector,
+            "industry": industry,
             "score": round(float(score), 2),
             "price": price,
+            "market_cap": market_cap,
             "forward_pe": forward_pe,
             "trailing_pe": trailing_pe,
             "peg_ratio": peg,

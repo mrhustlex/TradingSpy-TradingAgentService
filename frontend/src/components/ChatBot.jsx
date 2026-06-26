@@ -36,6 +36,14 @@ const estimateTokens = (value) => {
     return Math.max(1, Math.ceil(text.length / 4));
 };
 const formatTokenCount = (value) => Number(value || 0).toLocaleString();
+const formatMarketCap = (value) => {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return 'n/a';
+    if (Math.abs(amount) >= 1_000_000_000_000) return `$${(amount / 1_000_000_000_000).toFixed(2)}T`;
+    if (Math.abs(amount) >= 1_000_000_000) return `$${(amount / 1_000_000_000).toFixed(2)}B`;
+    if (Math.abs(amount) >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
+    return `$${amount.toLocaleString()}`;
+};
 const getMessageSender = (message = {}) => message.sender || message.role || message.type;
 const isUserMessage = (message = {}) => getMessageSender(message) === 'user';
 const isAssistantMessage = (message = {}) => ['bot', 'assistant'].includes(getMessageSender(message));
@@ -255,6 +263,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     };
     const messagesEndRef = useRef(null);
     const messagesScrollRef = useRef(null);
+    const mainInputRef = useRef(null);
     const shouldStickToBottomRef = useRef(true);
     const agentPollFailureRef = useRef(0);
 
@@ -749,9 +758,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         setThreadState(prev => ({ ...prev, activeId: id }));
     };
 
-    const createThread = () => {
-        const t = newThread('New Chat');
+    const createThread = (title = 'New Chat') => {
+        const t = newThread(title);
         setThreadState(prev => ({ activeId: t.id, threads: [t, ...prev.threads] }));
+        return t.id;
     };
 
     const deleteThread = (id, e) => {
@@ -962,6 +972,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 thresholds.max_peg != null ? `PEG <= ${thresholds.max_peg}` : null,
                 thresholds.max_price_to_sales != null ? `P/S <= ${thresholds.max_price_to_sales}` : null,
                 thresholds.min_revenue_growth != null ? `revenue growth >= ${(Number(thresholds.min_revenue_growth) * 100).toFixed(0)}%` : null,
+                thresholds.min_market_cap != null ? `market cap >= ${formatMarketCap(thresholds.min_market_cap)}` : null,
+                thresholds.max_market_cap != null ? `market cap <= ${formatMarketCap(thresholds.max_market_cap)}` : null,
+                thresholds.include_industry_terms?.length ? `industry/sector matches ${thresholds.include_industry_terms.join(', ')}` : null,
                 thresholds.require_profit_margin ? 'positive profit margin preferred/required' : null,
             ].filter(Boolean);
             const topLines = candidates.slice(0, 5).map((candidate, index) => {
@@ -1892,20 +1905,22 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         }
     };
 
-    const submitUserMessage = async (rawMessage, { clearInput = true } = {}) => {
+    const submitUserMessage = async (rawMessage, { clearInput = true, targetThreadId = activeThread.id, allowQueue = true } = {}) => {
         if (!rawMessage?.trim()) return;
         const userMsg = rawMessage.trim();
         setInputHistoryIndex(null);
         setInputHistoryDraft('');
 
         // if currently waiting or streaming, queue the message instead of starting a parallel response
-        if (isAssistantBusy) {
-            updateThreadStreamState(activeThread.id, { queuedInput: userMsg });
+        const targetState = getThreadState(targetThreadId, threadStreamingStateRef.current);
+        const targetBusy = targetState.isStreaming || !!targetState.currentStreamingId || !!targetState.pendingAgentRequest;
+        if (allowQueue && targetBusy) {
+            updateThreadStreamState(targetThreadId, { queuedInput: userMsg });
             if (clearInput) setInput('');
             return;
         }
 
-        const tid = activeThread.id;
+        const tid = targetThreadId;
         if (clearInput) setInput('');
         addMessage(tid, 'user', userMsg);
         autoTitle(tid, userMsg);
@@ -2087,6 +2102,36 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             return;
         }
         await submitUserMessage(input, { clearInput: true });
+    };
+
+    const cancelQueuedInput = () => {
+        updateThreadStreamState(activeThread.id, { queuedInput: null });
+    };
+
+    const steerQueuedInput = () => {
+        if (!queuedInput) return;
+        setInput(queuedInput);
+        updateThreadStreamState(activeThread.id, { queuedInput: null });
+        requestAnimationFrame(() => {
+            mainInputRef.current?.focus?.();
+            const length = queuedInput.length;
+            mainInputRef.current?.setSelectionRange?.(length, length);
+        });
+    };
+
+    const startQueuedInputInNewThread = () => {
+        if (!queuedInput) return;
+        const queuedMessage = queuedInput;
+        updateThreadStreamState(activeThread.id, { queuedInput: null });
+        const newThreadId = createThread(queuedMessage.length > 40 ? `${queuedMessage.slice(0, 40)}…` : queuedMessage);
+        setInput('');
+        setTimeout(() => {
+            submitUserMessage(queuedMessage, {
+                clearInput: false,
+                targetThreadId: newThreadId,
+                allowQueue: false,
+            });
+        }, 50);
     };
 
     const consumedAutoPromptRef = useRef(null);
@@ -4118,11 +4163,26 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
                 {/* input bar */}
                 <div style={{ padding: '0.85rem 1.5rem', borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
-                    <div style={{ minHeight: '1.1rem', marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)', opacity: queuedInput ? 1 : 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-                        {queuedInput ? `Queued: "${queuedInput.slice(0, 80)}${queuedInput.length > 80 ? '...' : ''}"` : 'No queued message'}
+                    <div style={{ minHeight: '1.75rem', marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)', opacity: queuedInput ? 1 : 0, display: 'flex', alignItems: 'center', gap: '0.45rem', minWidth: 0 }}>
+                        <div style={{ flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
+                            {queuedInput ? `Queued: "${queuedInput.slice(0, 80)}${queuedInput.length > 80 ? '...' : ''}"` : 'No queued message'}
+                        </div>
+                        {queuedInput && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexShrink: 0 }}>
+                                <button className="btn btn-ghost btn-xs" onClick={startQueuedInputInNewThread} title="Start queued message in another thread" style={{ padding: '0.25rem 0.45rem' }}>
+                                    <Plus size={12} /> New thread
+                                </button>
+                                <button className="btn btn-ghost btn-xs" onClick={steerQueuedInput} title="Move queued message back into the input so you can edit it" style={{ padding: '0.25rem 0.45rem' }}>
+                                    <Edit2 size={12} /> Steer
+                                </button>
+                                <button className="btn btn-ghost btn-xs" onClick={cancelQueuedInput} title="Cancel queued message" style={{ padding: '0.25rem 0.35rem' }}>
+                                    <X size={12} />
+                                </button>
+                            </div>
+                        )}
                     </div>
                     <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
-                        <textarea className="input chat-main-input" style={{ flex: 1, minHeight: '46px', maxHeight: '120px', resize: 'vertical' }}
+                        <textarea ref={mainInputRef} className="input chat-main-input" style={{ flex: 1, minHeight: '46px', maxHeight: '120px', resize: 'vertical' }}
                             placeholder={mainInputPlaceholder}
                             value={input}
                             onChange={e => {

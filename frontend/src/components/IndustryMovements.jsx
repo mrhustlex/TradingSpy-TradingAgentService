@@ -229,7 +229,7 @@ const MoverStockDetail = ({ ticker, mover, onClose, onExplain }) => {
     ];
 
     return (
-        <div className="terminal-card" style={{ marginTop: '1rem', padding: 0, border: '1px solid var(--border-subtle)', overflow: 'hidden', flexShrink: 0 }}>
+        <div className="terminal-card" style={{ marginTop: 0, padding: 0, border: '1px solid var(--border-subtle)', overflow: 'hidden', flexShrink: 0 }}>
             <div style={{ padding: '0.8rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
                 <button className="btn btn-xs btn-ghost" onClick={onClose} title="Close detail" style={{ padding: '0.2rem 0.35rem' }}>
                     <X size={14} />
@@ -1245,13 +1245,13 @@ const IndustryMovements = ({ notify, onExplain }) => {
             )}
 
             {activeTab === 'movers' ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, minHeight: 0 }}>
-                    <div style={{ display: 'flex', gap: '1.5rem', flex: '1 1 auto', minHeight: selectedMover ? 360 : 0, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', gap: '1rem', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', gap: '1.5rem', flex: '1 1 auto', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
                         {renderMoverTable('Gainers', gainers, 'gainers', <TrendingUp size={16} style={{ color: 'var(--brand-green)' }} />, 'rgba(16, 185, 129, 0.1)', 'badge-green')}
                         {renderMoverTable('Losers', losers, 'losers', <TrendingDown size={16} style={{ color: 'var(--brand-red)' }} />, 'rgba(239, 68, 68, 0.1)', 'badge-red')}
                     </div>
                     {selectedMover && (
-                        <div style={{ flex: '0 0 auto', maxHeight: '42vh', overflow: 'auto' }}>
+                        <div style={{ flex: '0 0 min(430px, 34vw)', minWidth: 340, maxWidth: 460, minHeight: 0, overflow: 'auto' }}>
                             <MoverStockDetail
                                 ticker={selectedMover.ticker}
                                 mover={selectedMover}
