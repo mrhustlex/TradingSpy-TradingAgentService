@@ -4,7 +4,6 @@ dist
 .gitignore
 Dockerfile
 .dockerignore
-package-lock.json
 .env
 .env*
 !.env.example

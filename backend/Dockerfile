@@ -1,21 +1,21 @@
+FROM ghcr.io/astral-sh/uv:0.9.18 AS uv
+
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies + uv (provides uvx for MCP servers)
-RUN apt-get update && apt-get install -y \
-    build-essential \
+# Install the healthcheck client without pulling recommended packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh
+    && rm -rf /var/lib/apt/lists/*
 
-# Make uvx available on PATH
-ENV PATH="/root/.local/bin:$PATH"
+# Pin uv/uvx instead of downloading an installer script during the build.
+COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+    python -m pip install -r requirements.txt
 
 
 # Copy application code

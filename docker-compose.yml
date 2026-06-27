@@ -9,26 +9,17 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GOOGLE_AI_STUDIO_API_KEY=${GOOGLE_AI_STUDIO_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - LITELLM_API_KEY=${LITELLM_API_KEY}
-      - LITELLM_BASE_URL=${LITELLM_BASE_URL}
-      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
-      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
-      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION}
-      - GCP_PROJECT=${GCP_PROJECT}
-      - GCP_LOCATION=${GCP_LOCATION}
-      - GCP_API_KEY=${GCP_API_KEY}
-      - MISTRAL_API_KEY=${MISTRAL_API_KEY}
-      - DEFAULT_PROVIDER=${DEFAULT_PROVIDER}
-      - DEFAULT_MODEL=${DEFAULT_MODEL}
-      - SEARXNG_URL=http://searxng:8080
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://localhost:4000/v1}
+      DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-google_ai_studio}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gemini-2.5-flash}
+      REMOTE_AGENT_AUTH_TOKEN: ${REMOTE_AGENT_AUTH_TOKEN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SEARXNG_URL: http://searxng:8080
     volumes:
       - ./backend/data:/app/data
       - ./backend/modules:/app/modules
@@ -60,7 +51,6 @@ services:
 
   searxng:
     image: searxng/searxng:latest
-    container_name: searxng
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"

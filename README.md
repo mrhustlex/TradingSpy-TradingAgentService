@@ -1,199 +1,226 @@
 # TradingSpy
 
-> Local-first AI trading research: market heatmaps, news catalysts, strategy generation, Backtrader backtests, and transparent agent runs in one Docker app.
+Local-first AI trading research, market intelligence, strategy generation, and Backtrader backtesting in one Docker Compose stack.
 
-Screenshot/GIF slot: add `docs/screenshot.png` or `docs/demo.gif` before publishing the repo.
+TradingSpy lets you chat with market data, inspect heatmaps and news catalysts, generate Python strategies, and compare real backtest results without connecting a brokerage account. It does not place trades.
 
-TradingSpy is an open-source research workstation for traders and builders who want to ask questions, inspect market context, generate strategy ideas, and test them against real historical candles without wiring together five separate tools.
+## Highlights
 
-It is not a broker and it does not place trades. It is a local research environment for analysis, backtesting, and strategy iteration.
+- Tool-using market assistant with transparent agent runs and progress.
+- Market, sector, industry, news, insider, and technical context.
+- Backtrader strategy generation, validation, optimization, and benchmark comparisons.
+- Local data storage with no hosted TradingSpy account required.
+- Google AI Studio, Mistral, OpenRouter, and LiteLLM support.
+- OpenAI-compatible local API for scripts and other agent clients.
 
-## Why People Star It
+## Quick Start With Docker
 
-- Chat with your market data, strategies, news, heatmaps, and backtest history.
-- Generate Backtrader strategies with an agent that validates code, rejects zero-trade results, and compares against buy-and-hold or a baseline strategy.
-- See the agent work in public: data freshness, market context, candidate generation, validation failures, backtests, benchmark deltas, and stale/offline states.
-- Run local Docker services with persistent data under `backend/data/`.
-- Use validated LLM providers in the app: Google AI Studio, Mistral, OpenRouter, and LiteLLM.
-- Use the backend as an OpenAI-compatible local API for agentic trading research clients.
+This is the recommended installation path.
 
-## Demo Prompts
+### Prerequisites
 
-Try these after starting the app:
+- Git.
+- Docker Desktop, or Docker Engine with Docker Compose v2.
+- An API key for at least one supported LLM provider. The app will start without one, but AI features require a key.
 
-```text
-Generate until it beats buy and hold for QQQ. Use daily candles.
-```
-
-```text
-Improve EMA_Trend for TQQQ using daily candles. Generate until it beats EMA_Trend, not buy and hold.
-```
-
-```text
-Explain why the Market Overview heatmap looks like this for timeframe 1D. Use current heatmap data and fresh news.
-```
-
-```text
-Generate a strict RSI + volume + breakout strategy for SMH this year, but reject anything with zero trades.
-```
-
-## Features
-
-### Agents
-
-TradingSpy has several agent paths. They share the same market/backtest backend,
-but they are used for different jobs.
-
-| Agent path | Where it runs | What it does | Typical trigger |
-| --- | --- | --- | --- |
-| Normal tool-using assistant | Chat UI, `/api/backtest/ai/chat-with-tools` | Answers research questions with tools for market overview, heatmaps, news, fundamentals, insider activity, candles, strategy code, and backtest history. It is meant for interactive analysis and short tool checks. | "Why is the market moving?", "Any insider buying?", "Explain this strategy." |
-| Background workflow agent | Chat UI, `/api/agent/runs` | Starts a persistent run with a run ID, plan steps, progress, event logs, stop/retry/continue controls, and Task Center monitoring. It is used for longer work that should keep state outside the chat stream. | "Generate until it beats buy and hold", "Improve EMA_Trend", "Screen undervalued stocks." |
-| Strategy creation workflow | Background workflow `strategy_create` | Resolves ticker/data, checks freshness, reads market context, asks the configured LLM for candidate Backtrader code, validates generated code, saves candidates, runs backtests, rejects broken or zero-trade strategies, and compares against buy-and-hold. | New strategy requests. |
-| Strategy race workflow | Background workflow `strategy_race` | Improves or compares strategies over rounds. It can use a previous accepted version or selected baseline, generate candidates, backtest them, and accept only versions that beat the target benchmark. | Improve/optimize/beat requests. |
-| Fundamental screener workflow | Background workflow `fundamental_screener` | Screens a universe for valuation/growth/profitability candidates, enriches passing names with market context, news/options/insider summaries when available, and can continue with a wider universe. | "Find undervalued stocks", "screen cheap growth stocks." |
-| Market review workflow | Background workflow `market_review` | Handles data freshness and market-data tasks, such as checking or syncing datasets before analysis or strategy work. | "Check freshness", "download/sync data." |
-| OpenAI-compatible agent | `/v1/chat/completions` | Lets external clients call TradingSpy with OpenAI-style requests. Model IDs choose manual, legacy agentic, or current iterative agent behavior. | Local integrations, scripts, automations. |
-| ACP/A2A remote agents | ACP router and `/a2a/...` endpoints | Exposes selected capabilities to other agent clients: market data, backtests, intelligence, and strategy metadata. These outputs are disabled by default unless enabled in Settings. | Interop with trusted external agent clients. |
-
-The chat UI first classifies the user message with `/api/agent/intent`. If the
-request is quick analysis, it stays in the normal tool-using assistant. If the
-request is long-running work, the UI creates a background run through
-`/api/agent/runs`. Background runs are stored locally, visible in the Task
-Center, and support:
-
-- `GET /api/agent/runs` to list recent runs.
-- `GET /api/agent/runs/{run_id}` to poll full state.
-- `POST /api/agent/runs/{run_id}/stop` to request cancellation.
-- `POST /api/agent/runs/{run_id}/continue` to continue a completed/stopped run.
-- `DELETE /api/agent/runs/{run_id}` or `DELETE /api/agent/runs` to clean records.
-
-For strategy workflows, the agent is deliberately conservative: it validates
-generated code before backtesting, rejects inactive zero-trade results instead
-of treating `0% ROI` as meaningful, and reports validation failures/runtime
-errors as part of the public run log. It supports custom agent instructions,
-answer budget, run detail, sequential/parallel execution, and custom battle
-parameters.
-
-For insider buy/sell questions, the normal assistant uses deterministic
-tool-backed responses. It should report only returned records and separate
-open-market buys/sells from grants or awards; if the feed is unavailable, it
-should say so instead of filling gaps from memory.
-
-### Backtesting And Optimization
-
-- Backtrader-powered local backtests.
-- Parallel or sequential execution.
-- Stake range and trailing-stop matrix.
-- Start date, end date, initial capital, and commission controls.
-- Buy-and-hold benchmark comparison.
-- Strategy battle views with capped selection for faster experiments.
-- Intraday datasets can include premarket/postmarket candles when requested, including OHLCV data for strategies such as "premarket up X% on high volume, enter after open, exit by close."
-
-### Market Intelligence
-
-- Market overview and industry/sector heatmaps.
-- ETF proxy group analysis.
-- News and catalyst lookup through local SearXNG/web search tooling.
-- Watchlist sync and dataset freshness checks.
-- Daily, intraday, and longer-window candle data support.
-
-### Local App Experience
-
-- React dashboard with chat, terminal, strategy library, backtesting, market intelligence, and settings.
-- Persistent local data in `backend/data/`.
-- Docker Compose setup for backend, frontend, and SearXNG.
-- OpenAI-compatible `/v1/chat/completions` and `/v1/models` endpoints.
-
-## Quick Start
-
-### 1. Clone
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/mrhustlex/TradingSpy.git
 cd TradingSpy
-```
-
-### 2. Configure
-
-```bash
 cp .env.example .env
 ```
 
-Add at least one LLM provider key to `.env`, for example:
+Open `.env` and add one provider key. Google AI Studio is the default:
 
 ```bash
-GOOGLE_AI_STUDIO_API_KEY=your-gemini-key
+GOOGLE_AI_STUDIO_API_KEY=your-key
 DEFAULT_PROVIDER=google_ai_studio
 DEFAULT_MODEL=gemini-2.5-flash
 ```
 
-You can also configure providers inside the app settings.
+You may leave the keys blank and configure a provider later from the app's Settings page.
 
-### 3. Run
+### 2. Start TradingSpy
 
 ```bash
 docker compose up -d --build
 ```
 
-Open:
+The first build downloads the application dependencies. Later starts use the Docker cache.
 
-- App: [http://localhost:3000](http://localhost:3000)
-- Backend API: [http://localhost:8000](http://localhost:8000)
-- API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
-- SearXNG: [http://localhost:8080](http://localhost:8080)
-
-### 4. Stop
+Check that all three services are healthy:
 
 ```bash
-docker compose down
+docker compose ps
 ```
 
-## Manual Development
+Open:
 
-Backend:
+- TradingSpy: <http://localhost:3000>
+- API documentation: <http://localhost:8000/docs>
+- SearXNG: <http://localhost:8080>
+
+### 3. Stop or update
+
+```bash
+# Stop the application without deleting local data
+docker compose down
+
+# Pull updates and rebuild
+git pull
+docker compose up -d --build
+```
+
+Runtime data remains under `backend/data/`.
+
+## Local Development Without Docker
+
+Use this path when you want hot reload or plan to change the code.
+
+### Prerequisites
+
+- Python 3.11. Python 3.13 is not currently supported by the data-science dependency set.
+- Node.js 22 and npm.
+- Git.
+- Docker is optional for SearXNG-backed web/news search.
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/mrhustlex/TradingSpy.git
+cd TradingSpy
+cp .env.example backend/.env
+```
+
+Add one provider key to `backend/.env`, or configure it later in the UI.
+
+### 2. Start the backend
+
+Run in the first terminal:
 
 ```bash
 cd backend
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Use Python 3.11 for local backend development. The Docker image uses Python
-3.11, and the pinned data-science dependencies are not reliable with Python
-3.13.
+On Windows PowerShell, activate the environment with:
 
-Frontend:
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Confirm the backend is ready at <http://localhost:8000/health>.
+
+### 3. Start the frontend
+
+Run in a second terminal from the repository root:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
+
+Open <http://localhost:5173>.
+
+### 4. Optional: start local web search
+
+News search uses SearXNG. If Docker is available, run this from the repository root:
+
+```bash
+docker compose up -d searxng
+```
+
+The rest of TradingSpy still works when SearXNG is unavailable; web-search tools will report that the search service could not be reached.
+
+## Provider Configuration
+
+Keys may be stored in `.env`/`backend/.env` or entered in Settings. Never commit a real key.
+
+| Provider | Environment variable | Example default model |
+| --- | --- | --- |
+| Google AI Studio | `GOOGLE_AI_STUDIO_API_KEY` | `gemini-2.5-flash` |
+| Mistral | `MISTRAL_API_KEY` | `mistral-large-latest` |
+| OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
+| LiteLLM | `LITELLM_API_KEY`, `LITELLM_BASE_URL` | Your proxy's model ID |
+
+See [.env.example](.env.example) for every supported setting.
+
+## First Things To Try
+
+After opening the app, try:
+
+```text
+Explain today's market and strongest sectors using current heatmap data and fresh news.
+```
+
+```text
+Download daily QQQ data for one year, then generate and backtest an RSI and volume strategy.
+```
+
+```text
+Generate candidates until one beats buy and hold for QQQ. Reject strategies with zero trades.
+```
+
+```text
+Find undervalued profitable semiconductor stocks and explain the evidence.
+```
+
+Agent runs appear in the Task Center and expose their plan, progress, tool results, validation failures, and final outcome.
+
+## What TradingSpy Includes
+
+### Research and market intelligence
+
+- Market overview, sector and industry heatmaps, watchlists, and ticker charts.
+- News and catalyst search through the local SearXNG service.
+- Fundamentals, insider activity, technical context, and data-freshness checks.
+- Daily, intraday, and extended-hours candle downloads.
+
+### Strategy research
+
+- Backtrader-powered backtests and parameter optimization.
+- AI-generated strategies with syntax and runtime validation.
+- Zero-trade rejection and buy-and-hold or saved-strategy benchmarks.
+- Persistent strategy, result, and optimization history.
+
+### Agent interfaces
+
+- Interactive tool-using assistant for short research questions.
+- Persistent background workflows for strategy races, market reviews, and screens.
+- OpenAI-compatible `/v1/chat/completions` interface.
+- Optional ACP and A2A outputs for trusted local integrations.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    User["User / Browser"] --> Frontend["React Frontend<br/>localhost:3000"]
-    Frontend --> Backend["FastAPI Backend<br/>localhost:8000"]
-    Backend --> ChatAgent["Tool-Using Chat Assistant<br/>short research + tool checks"]
-    Backend --> WorkflowAgent["Background Workflow Agents<br/>strategy_create / strategy_race / market_review / fundamental_screener"]
-    Backend --> RemoteAgents["Remote Agent Outputs<br/>OpenAI-compatible / ACP / A2A"]
-    Backend --> Backtest["Backtrader Engine<br/>backtests + optimization"]
-    Backend --> Market["Market Intelligence<br/>yfinance + heatmaps + news"]
-    Backend --> Store["Local Data<br/>TinyDB + candles + strategies"]
-    Backend --> Search["SearXNG<br/>localhost:8080"]
-    ChatAgent --> LLM["Validated LLM Providers<br/>Google AI Studio / Mistral / OpenRouter / LiteLLM"]
-    WorkflowAgent --> LLM
-    RemoteAgents --> ChatAgent
-    RemoteAgents --> WorkflowAgent
+    User["Browser / API client"] --> Frontend["React frontend"]
+    Frontend --> Backend["FastAPI backend"]
+    Backend --> Agents["Tool-using and background agents"]
+    Backend --> Backtest["Backtrader engine"]
+    Backend --> Market["Market data and intelligence"]
+    Backend --> Store["Local data under backend/data"]
+    Backend --> Search["SearXNG"]
+    Agents --> LLM["Configured LLM provider"]
 ```
 
-## Data Layout
+The Docker setup binds all services to `127.0.0.1`:
 
-Runtime data is intentionally local and ignored by git:
+| Service | Address |
+| --- | --- |
+| Frontend | `http://localhost:3000` |
+| Backend | `http://localhost:8000` |
+| SearXNG | `http://localhost:8080` |
+
+## Local Data
+
+TradingSpy stores runtime data locally:
 
 ```text
 backend/data/
@@ -206,15 +233,17 @@ backend/data/
 └── temp_datas/
 ```
 
-Only `.gitkeep` placeholders and example JSON files should be committed from `backend/data/`.
+These files are ignored by Git. Back them up separately if the results matter to you.
 
 ## OpenAI-Compatible API
 
-TradingSpy exposes local OpenAI-style endpoints:
+List the available adapter modes:
 
 ```bash
 curl http://localhost:8000/v1/models
 ```
+
+Send a streaming request:
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -223,144 +252,75 @@ curl http://localhost:8000/v1/chat/completions \
     "model": "trading-ai-strands",
     "stream": true,
     "messages": [
-      { "role": "user", "content": "Is TQQQ strong today? Use market context." }
+      {"role": "user", "content": "Is QQQ strong today? Use market context."}
     ]
   }'
 ```
 
-Current OpenAI-compatible model IDs:
-
-Use `trading-ai-strands` for normal integrations. It is the current recommended
-agent loop for tool-using TradingSpy assistant behavior. These model IDs are
-adapter modes, not separate trained models; they choose which backend path is
-used.
-
-| Model ID | Mode | Behavior |
-| --- | --- | --- |
-| `trading-ai-strands` | Iterative tool agent | Current recommended loop for external clients. It can call tools repeatedly, observe results, and continue until it has enough evidence. |
-| `trading-ai-agentic` | Legacy streaming agent | Older streaming tool path kept for compatibility. Prefer `trading-ai-strands` for new clients. |
-| `trading-ai` | Manual/plain assistant | Direct LLM response path with no tool execution. Useful only when a client wants plain text behavior. |
-| `trading-ai-manual` | Manual/plain assistant | Same manual path as `trading-ai`. |
-
-For new OpenAI-compatible clients, use `trading-ai-strands` with `stream: true`.
-The main web UI uses the backend assistant endpoints directly and also routes
-normal assistant work through the current tool-using flow.
-
-Remote agent outputs can be enabled in Settings:
-
-- OpenAI-compatible output exposes `/v1/models` and `/v1/chat/completions`.
-- ACP Agent exposes discoverable capability agents such as `market-data`,
-  `backtest`, `intelligence`, and `strategy`.
-- A2A Remote Agent exposes `/.well-known/agent-card.json` and `/a2a/...` task
-  endpoints.
-
-Set a Remote Agent Auth Token before exposing ACP/A2A beyond localhost.
-
-## Configuration
-
-Common `.env` values:
-
-```bash
-OPENAI_API_KEY=
-OPENROUTER_API_KEY=
-GROQ_API_KEY=
-GOOGLE_AI_STUDIO_API_KEY=
-GEMINI_API_KEY=
-MISTRAL_API_KEY=
-LITELLM_API_KEY=
-LITELLM_BASE_URL=http://localhost:4000/v1
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_ENDPOINT=
-AZURE_OPENAI_API_VERSION=
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_REGION=
-GCP_PROJECT=
-GCP_LOCATION=
-DEFAULT_PROVIDER=google_ai_studio
-DEFAULT_MODEL=gemini-2.5-flash
-```
-
-The Docker backend also passes `SEARXNG_URL=http://searxng:8080`.
-
-## Safety And Limits
-
-- TradingSpy is for research and education only.
-- It does not provide financial advice.
-- Backtests can overfit and do not predict future returns.
-- Generated strategies must be reviewed before any real-world use.
-- Keep API keys out of git. Use `.env` or your own secret manager.
+`trading-ai-strands` is the recommended tool-using adapter. `trading-ai` and `trading-ai-manual` provide plain responses, while `trading-ai-agentic` remains for compatibility.
 
 ## Troubleshooting
 
-Check services:
+### A service does not become healthy
 
 ```bash
 docker compose ps
-curl http://localhost:8000/health
-curl http://localhost:3000
+docker compose logs --tail=200 backend
+docker compose logs --tail=200 frontend
+docker compose logs --tail=200 searxng
 ```
 
-View logs:
+### A port is already in use
+
+TradingSpy needs local ports `3000`, `8000`, and `8080`. Stop the conflicting process or change the host-side port in `docker-compose.yml`.
+
+### The assistant says no provider is configured
+
+Add a key to `.env` and recreate the backend:
 
 ```bash
-docker compose logs -f backend
-docker compose logs -f frontend
-docker compose logs -f searxng
+docker compose up -d --force-recreate backend
 ```
 
-Rebuild:
+Alternatively, save the key from Settings in the application.
 
-```bash
-docker compose build --no-cache
-docker compose up -d
-```
+### The frontend opens but the API is unavailable
 
-If Docker reports no space left on device, prune unused build cache and images with care:
+Check <http://localhost:8000/health>. For local development, make sure the backend terminal is still running and uses port `8000`.
+
+### Docker runs out of disk space
+
+Inspect usage before removing unused build cache:
 
 ```bash
 docker system df
 docker builder prune
 ```
 
-## Roadmap
+## Development Checks
 
-- More deterministic strategy templates for common regimes.
-- Better benchmark memory across chat threads.
-- Exportable backtest reports.
-- More provider-specific streaming support.
-- Sharable demo screenshots and walkthrough GIFs.
-- Optional auth for hosted deployments.
+```bash
+python3 -m py_compile backend/main.py backend/modules/*.py
+npm run build --prefix frontend
+docker compose config --quiet
+```
+
+The direct Python dependencies live in `backend/requirements.in`; `backend/requirements.txt` is the generated lock file used by Docker and local installs.
+
+## Safety
+
+- TradingSpy is experimental research software, not financial advice or a trading signal service.
+- Backtests can overfit and do not predict future returns.
+- Generated strategy Python is executed locally and is not sandboxed. Review it before running it.
+- Keep all services bound to localhost unless you add authentication, TLS, network controls, and process isolation.
+- Keep credentials out of Git and rotate any key that has ever been committed.
+
+See [SECURITY.md](SECURITY.md) for the full security policy.
 
 ## Contributing
 
-Good first contributions:
-
-- Add a screenshot or short demo GIF to `docs/screenshot.png`.
-- Improve strategy validation rules.
-- Add regression tests for agent routing and stale-run behavior.
-- Improve docs for provider setup.
-- Add new market intelligence tools.
-
-Development loop:
-
-```bash
-npm run build --prefix frontend
-python3 -m py_compile backend/main.py
-docker compose up -d --build
-```
-
-Open an issue with:
-
-- What you asked the assistant.
-- The agent run ID, if any.
-- Backend logs around the failure.
-- Dataset/ticker/timeframe.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and use [SUPPORT.md](SUPPORT.md) when reporting a problem.
 
 ## License
 
-TradingSpy is licensed under the PolyForm Noncommercial License 1.0.0. Non-commercial use is allowed; commercial use requires separate permission from the copyright holder. See [LICENSE](LICENSE).
-
-## Disclaimer
-
-TradingSpy is experimental software. It is not investment advice, a trading signal service, or a guarantee of performance. You are responsible for reviewing all generated code, assumptions, data quality, and results.
+TradingSpy is available under the [MIT License](LICENSE).

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { INTELLIGENCE_SERVICE } from '../config';
-import { RefreshCw, TrendingUp, TrendingDown, Search, Newspaper, Filter, Loader2, MessageCircleQuestion, Activity, Save, Trash2, X } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Search, Newspaper, Filter, Loader2, MessageCircleQuestion, Activity, Save, Trash2, X, Bell, BellRing } from 'lucide-react';
 
 const MAJOR_STOCKS = [
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO',
@@ -292,7 +292,7 @@ const SIGNAL_BADGE_HELP = {
     'No signal': 'There is not enough usable price data to calculate a signal.',
 };
 
-const IndustryMovements = ({ notify, onExplain }) => {
+const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
     const [activeTab, setActiveTab] = useState('movers');
     const [period, setPeriod] = useState('1d');
     const [extended, setExtended] = useState(false);
@@ -355,6 +355,11 @@ const IndustryMovements = ({ notify, onExplain }) => {
         try { return JSON.parse(localStorage.getItem('movement_saved_signals') || '[]'); }
         catch { return []; }
     });
+    const [signalWatches, setSignalWatches] = useState([]);
+    const [signalEvents, setSignalEvents] = useState([]);
+    const [unreadSignalEvents, setUnreadSignalEvents] = useState(0);
+    const [watchForm, setWatchForm] = useState({ direction: 'either', threshold_percent: 2, window: '15m', require_volume: false, volume_multiplier: 1.2 });
+    const [watchSaving, setWatchSaving] = useState(false);
     const requestIdRef = useRef(0);
     const notifyRef = useRef(notify);
     const newsRequestKeyRef = useRef('');
@@ -362,6 +367,24 @@ const IndustryMovements = ({ notify, onExplain }) => {
     useEffect(() => {
         notifyRef.current = notify;
     }, [notify]);
+
+    const loadSignalWatches = useCallback(async () => {
+        try {
+            const [watchResponse, eventResponse] = await Promise.all([
+                axios.get(`${INTELLIGENCE_SERVICE}/signal-watches`),
+                axios.get(`${INTELLIGENCE_SERVICE}/signal-events?limit=30`),
+            ]);
+            setSignalWatches(watchResponse.data.watches || []);
+            setSignalEvents(eventResponse.data.events || []);
+            setUnreadSignalEvents(eventResponse.data.unread_count || 0);
+        } catch (error) { console.warn('Failed to load signal watches', error); }
+    }, []);
+
+    useEffect(() => {
+        loadSignalWatches();
+        const timer = setInterval(loadSignalWatches, 30000);
+        return () => clearInterval(timer);
+    }, [loadSignalWatches]);
 
     const activeTickers = useMemo(() => {
         const parsed = parseTickers(tickerUniverse);
@@ -1089,6 +1112,37 @@ const IndustryMovements = ({ notify, onExplain }) => {
         notifyRef.current?.('Trading signal saved', 'green');
     };
 
+    const createSignalWatch = async () => {
+        const tickers = parseTickers(signalInput || selectedSignalTickers.join(', ')).slice(0, 20);
+        if (!tickers.length) return notifyRef.current?.('Choose ticker(s) before creating a watch', 'yellow');
+        setWatchSaving(true);
+        try {
+            await axios.post(`${INTELLIGENCE_SERVICE}/signal-watches`, { tickers, ...watchForm });
+            await loadSignalWatches();
+            notifyRef.current?.(`Watching ${tickers.join(', ')}`, 'green');
+        } catch (error) { notifyRef.current?.(error.response?.data?.detail || 'Could not create signal watch', 'red'); }
+        finally { setWatchSaving(false); }
+    };
+
+    const toggleSignalWatch = async (watch) => {
+        try { await axios.patch(`${INTELLIGENCE_SERVICE}/signal-watches/${watch.id}`, { enabled: !watch.enabled }); await loadSignalWatches(); }
+        catch { notifyRef.current?.('Could not update signal watch', 'red'); }
+    };
+
+    const deleteSignalWatch = async (watch) => {
+        try { await axios.delete(`${INTELLIGENCE_SERVICE}/signal-watches/${watch.id}`); await loadSignalWatches(); }
+        catch { notifyRef.current?.('Could not delete signal watch', 'red'); }
+    };
+
+    const openSignalEvent = async (event) => {
+        try { await axios.post(`${INTELLIGENCE_SERVICE}/signal-events/read`, { event_ids: [event.id] }); } catch { /* local navigation is still useful */ }
+        setSignalEvents(prev => prev.map(item => item.id === event.id ? { ...item, read: true } : item));
+        setUnreadSignalEvents(prev => Math.max(0, prev - (event.read ? 0 : 1)));
+        setSignalInput(event.ticker);
+        setSelectedSignalTickers([event.ticker]);
+        onOpenChart?.(event.ticker, event.window);
+    };
+
     const explainSignal = () => {
         const summary = signalStats.filter(s => !s.error).slice(0, 8).map(s =>
             `${s.ticker}: ${s.label}, move ${s.current_move_pct ?? '-'}%, range ${s.current_range_pct ?? '-'}%, avg range ${s.avg_range_pct ?? '-'}%, volume ${s.volume_ratio ?? '-'}x, close location ${s.close_location_pct ?? '-'}%`
@@ -1117,6 +1171,11 @@ const IndustryMovements = ({ notify, onExplain }) => {
                     </button>
                     <button style={subTabStyle(activeTab === 'signal')} onClick={() => setActiveTab('signal')}>
                         <Activity size={14} style={{ verticalAlign: 'text-bottom', marginRight: 6 }} /> Trading Signal
+                        {unreadSignalEvents > 0 && <span style={{ marginLeft: 5, minWidth: 16, height: 16, lineHeight: '16px', borderRadius: 8, display: 'inline-block', background: 'var(--brand-red)', color: '#fff', fontSize: '0.62rem' }}>{unreadSignalEvents}</span>}
+                    </button>
+                    <button style={subTabStyle(activeTab === 'watches')} onClick={() => setActiveTab('watches')}>
+                        <Bell size={14} style={{ verticalAlign: 'text-bottom', marginRight: 6 }} /> Signal Watches
+                        {unreadSignalEvents > 0 && <span style={{ marginLeft: 5, minWidth: 16, height: 16, lineHeight: '16px', borderRadius: 8, display: 'inline-block', background: 'var(--brand-red)', color: '#fff', fontSize: '0.62rem' }}>{unreadSignalEvents}</span>}
                     </button>
                     <button className="btn btn-sm btn-ghost" onClick={explainMovements} title="Ask assistant to explain these movers with news">
                         <MessageCircleQuestion size={14} /> Explain
@@ -1261,6 +1320,20 @@ const IndustryMovements = ({ notify, onExplain }) => {
                         </div>
                     )}
                 </div>
+            ) : activeTab === 'watches' ? (
+                <div className="terminal-card" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '1rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '0.85rem' }}><BellRing size={17} color="var(--brand-blue)" /><strong>Signal Watches</strong><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Use the Trading Signal tab to scan tickers, then create a watch here.</span><button className="btn btn-xs btn-ghost" style={{ marginLeft: 'auto' }} onClick={loadSignalWatches}><RefreshCw size={12} /> Refresh</button></div>
+                    <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap', padding: '0.75rem', background: 'var(--bg-accent)', borderRadius: 7 }}>
+                        <input className="input" value={signalInput} onChange={e => setSignalInput(e.target.value)} placeholder="SOXL, NVDA" style={{ flex: '1 1 190px', maxWidth: 350, fontSize: '0.78rem' }} />
+                        <select className="input" value={watchForm.direction} onChange={e => setWatchForm(prev => ({ ...prev, direction: e.target.value }))} style={{ width: 'auto', fontSize: '0.75rem' }}><option value="either">Up or down</option><option value="up">Up only</option><option value="down">Down only</option></select>
+                        <input className="input" type="number" min="0.1" step="0.1" value={watchForm.threshold_percent} onChange={e => setWatchForm(prev => ({ ...prev, threshold_percent: Number(e.target.value) }))} style={{ width: 70, fontSize: '0.75rem' }} />
+                        <select className="input" value={watchForm.window} onChange={e => setWatchForm(prev => ({ ...prev, window: e.target.value }))} style={{ width: 'auto', fontSize: '0.75rem' }}>{['1m', '5m', '15m', '30m', '1h', '1d'].map(window => <option key={window} value={window}>{window}</option>)}</select>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem' }}><input type="checkbox" checked={watchForm.require_volume} onChange={e => setWatchForm(prev => ({ ...prev, require_volume: e.target.checked }))} /> Volume</label>
+                        <button className="btn btn-xs btn-primary" onClick={createSignalWatch} disabled={watchSaving}>{watchSaving ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />} Create watch</button>
+                    </div>
+                    <div style={{ marginTop: '1rem', display: 'grid', gap: '0.45rem' }}>{signalWatches.length ? signalWatches.map(watch => <div key={watch.id} className="panel" style={{ margin: 0, padding: '0.7rem', display: 'flex', gap: '0.65rem', alignItems: 'center', flexWrap: 'wrap' }}><Bell size={14} color={watch.enabled ? 'var(--brand-green)' : 'var(--text-muted)'} /><strong>{watch.tickers.join(', ')}</strong><span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{watch.direction} {watch.threshold_percent}% in {watch.window}{watch.require_volume ? ` · ${watch.volume_multiplier}x volume` : ''}</span><span style={{ marginLeft: 'auto', fontSize: '0.72rem', color: 'var(--text-muted)' }}>{watch.last_status || 'Waiting for first check'}</span><button className="btn btn-xs btn-ghost" onClick={() => toggleSignalWatch(watch)}>{watch.enabled ? 'Pause' : 'Resume'}</button><button className="btn btn-xs btn-ghost" onClick={() => deleteSignalWatch(watch)}><Trash2 size={12} /></button></div>) : <div style={{ color: 'var(--text-muted)', padding: '1.5rem 0' }}>No signal watches yet.</div>}</div>
+                    <div style={{ marginTop: '1rem' }}><strong style={{ fontSize: '0.82rem' }}>Alert Inbox</strong>{signalEvents.length ? signalEvents.map(event => <button key={event.id} onClick={() => openSignalEvent(event)} style={{ marginTop: '0.45rem', display: 'block', width: '100%', textAlign: 'left', border: '1px solid var(--border-subtle)', background: event.read ? 'transparent' : 'rgba(59,130,246,0.08)', color: 'var(--text-primary)', padding: '0.55rem', borderRadius: 6, cursor: 'pointer', fontSize: '0.76rem' }}><strong>{event.ticker}</strong> {event.move_percent >= 0 ? '+' : ''}{event.move_percent}% in {event.window} <span style={{ float: 'right', color: 'var(--text-muted)' }}>{formatDate(event.created_at)}</span></button>) : <div style={{ color: 'var(--text-muted)', padding: '0.8rem 0' }}>No triggered alerts yet.</div>}</div>
+                </div>
             ) : activeTab === 'signal' ? (
                 <div className="terminal-card" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 0 }}>
                     <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -1360,6 +1433,26 @@ const IndustryMovements = ({ notify, onExplain }) => {
                     </div>
                     <div style={{ padding: '0.55rem 1rem 0', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                         Source: live yfinance OHLCV, not saved datasets. {signalPeers.length > 0 ? `Peers for ${signalPrimaryTicker}: ${signalPeers.join(', ')} (${signalPeerSource || 'peer resolver'})` : `Peer resolver: ${signalPeerSource || 'scan one ticker with Peers on to add comparable names.'}`}
+                    </div>
+                    <div className="terminal-card" style={{ margin: '0.9rem 1rem 0', padding: '0.8rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap', marginBottom: '0.65rem' }}>
+                            <BellRing size={15} color="var(--brand-blue)" />
+                            <strong style={{ fontSize: '0.84rem' }}>Signal Watch</strong>
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>Background monitoring and in-app alerts</span>
+                            <button className="btn btn-xs btn-ghost" style={{ marginLeft: 'auto' }} onClick={loadSignalWatches}><RefreshCw size={12} /> Refresh</button>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <select className="input" value={watchForm.direction} onChange={e => setWatchForm(prev => ({ ...prev, direction: e.target.value }))} style={{ width: 'auto', fontSize: '0.75rem' }}><option value="either">Up or down</option><option value="up">Up only</option><option value="down">Down only</option></select>
+                            <input className="input" type="number" min="0.1" step="0.1" value={watchForm.threshold_percent} onChange={e => setWatchForm(prev => ({ ...prev, threshold_percent: Number(e.target.value) }))} style={{ width: 78, fontSize: '0.75rem' }} title="Percent move threshold" />
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>% in</span>
+                            <select className="input" value={watchForm.window} onChange={e => setWatchForm(prev => ({ ...prev, window: e.target.value }))} style={{ width: 'auto', fontSize: '0.75rem' }}>{['1m', '5m', '15m', '30m', '1h', '1d'].map(window => <option key={window} value={window}>{window}</option>)}</select>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}><input type="checkbox" checked={watchForm.require_volume} onChange={e => setWatchForm(prev => ({ ...prev, require_volume: e.target.checked }))} /> Volume</label>
+                            {watchForm.require_volume && <><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>min</span><input className="input" type="number" min="1" step="0.1" value={watchForm.volume_multiplier} onChange={e => setWatchForm(prev => ({ ...prev, volume_multiplier: Number(e.target.value) }))} style={{ width: 65, fontSize: '0.75rem' }} /><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>x</span></>}
+                            <button className="btn btn-xs btn-primary" onClick={createSignalWatch} disabled={watchSaving}>{watchSaving ? <Loader2 size={12} className="animate-spin" /> : <Bell size={12} />} Watch selected</button>
+                            {[{ threshold_percent: 2, window: '15m' }, { threshold_percent: 4, window: '1h' }].map(preset => <button key={preset.window} className="badge badge-ghost" style={{ border: 0, cursor: 'pointer' }} onClick={() => setWatchForm(prev => ({ ...prev, ...preset }))}>+/- {preset.threshold_percent}% / {preset.window}</button>)}
+                        </div>
+                        {signalWatches.length > 0 && <div style={{ marginTop: '0.7rem', display: 'grid', gap: '0.35rem' }}>{signalWatches.map(watch => <div key={watch.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.73rem', background: 'var(--bg-accent)', padding: '0.45rem 0.55rem', borderRadius: 6, flexWrap: 'wrap' }}><Bell size={12} color={watch.enabled ? 'var(--brand-green)' : 'var(--text-muted)'} /><strong>{watch.tickers.join(', ')}</strong><span>{watch.direction} {watch.threshold_percent}% / {watch.window}{watch.require_volume ? ` · ${watch.volume_multiplier}x volume` : ''}</span><span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>{watch.last_status || 'Waiting'}</span><button className="btn btn-xs btn-ghost" onClick={() => toggleSignalWatch(watch)}>{watch.enabled ? 'Pause' : 'Resume'}</button><button className="btn btn-xs btn-ghost" onClick={() => deleteSignalWatch(watch)} title="Delete watch"><Trash2 size={12} /></button></div>)}</div>}
+                        {signalEvents.length > 0 && <div style={{ marginTop: '0.7rem' }}><div style={{ fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem' }}>Alert Inbox</div>{signalEvents.slice(0, 6).map(event => <button key={event.id} onClick={() => openSignalEvent(event)} style={{ width: '100%', textAlign: 'left', border: '1px solid var(--border-subtle)', background: event.read ? 'transparent' : 'rgba(59,130,246,0.08)', color: 'var(--text-primary)', padding: '0.45rem 0.55rem', borderRadius: 6, cursor: 'pointer', marginBottom: '0.3rem', fontSize: '0.73rem' }}><strong>{event.ticker}</strong> {event.move_percent >= 0 ? '+' : ''}{event.move_percent}% in {event.window} · {event.volume_ratio != null ? `${event.volume_ratio}x volume` : 'volume unavailable'} <span style={{ float: 'right', color: 'var(--text-muted)' }}>{event.created_at ? formatDate(event.created_at) : ''}</span></button>)}</div>}
                     </div>
                     <div style={{ padding: '1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '0.75rem' }}>
                         {[

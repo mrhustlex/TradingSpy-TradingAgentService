@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createChart } from 'lightweight-charts';
 import {
     Calendar, Filter, X, ChevronRight, Activity, Plus,
     ChevronDown, ChevronUp, TrendingUp, TrendingDown, GitFork,
     Pen, Trash2
 } from 'lucide-react';
+import TradeSetupChecklist from './TradeSetupChecklist';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SMA_COLORS = ['#eab308', '#f97316', '#ef4444', '#06b6d4', '#84cc16'];
@@ -136,6 +137,9 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
     const [fibLow, setFibLow] = useState('');
     const [fibEnabled, setFibEnabled] = useState(false);
     const [fibDir, setFibDir] = useState('bull');
+    const [autoAnnotate, setAutoAnnotate] = useState(false);
+    const [tradeAnalysis, setTradeAnalysis] = useState(null);
+    const [annotationVisibility, setAnnotationVisibility] = useState({ showLevels: true, showTrendlines: true, showStructures: true });
     const [drawingMode, setDrawingMode] = useState(false);
     const [currentDrawPoints, setCurrentDrawPoints] = useState([]);
     const drawingModeRef = useRef(false);
@@ -158,6 +162,10 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
     const uniqueIntervals = [...new Set((allFiles || []).filter(f => parseInfo(f).ticker === currentInfo.ticker).map(f => parseInfo(f).interval))].sort();
     const handleTickerChange = (t) => { const m = (allFiles || []).find(f => parseInfo(f).ticker === t); if (m && onSwitch) onSwitch(m); };
     const handleIntervalChange = (iv) => { const m = (allFiles || []).find(f => { const i = parseInfo(f); return i.ticker === currentInfo.ticker && i.interval === iv; }); if (m && onSwitch) onSwitch(m); };
+    const onTradeAnalysisChange = useCallback((analysis, visibility) => {
+        setTradeAnalysis(analysis);
+        setAnnotationVisibility(visibility);
+    }, []);
 
     const toggleInd = (id) => setIndicators(p => ({ ...p, [id]: { ...p[id], enabled: !p[id].enabled } }));
     const addPeriod = (id) => setIndicators(p => ({ ...p, [id]: { ...p[id], periods: [...p[id].periods, 14] } }));
@@ -232,6 +240,28 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                 candle.createPriceLine({ price, color: meta.color, lineWidth: 1, lineStyle: meta.style, axisLabelVisible: true, title: line.label || meta.label });
             }
         });
+
+        // Deterministic setup annotations are kept separate from user lines.
+        if (autoAnnotate && tradeAnalysis?.available) {
+            if (annotationVisibility.showLevels) {
+                [...(tradeAnalysis.levels?.supports || []), ...(tradeAnalysis.levels?.resistances || [])].forEach((level) => {
+                    candle.createPriceLine({
+                        price: level.price,
+                        color: level.type === 'support' ? '#10b98199' : '#f9731699',
+                        lineWidth: 1,
+                        lineStyle: 2,
+                        axisLabelVisible: true,
+                        title: level.label,
+                    });
+                });
+            }
+            if (annotationVisibility.showTrendlines) {
+                (tradeAnalysis.trendlines || []).forEach((line) => {
+                    const series = chart.addLineSeries({ color: line.type === 'support' ? '#10b981' : '#f97316', lineWidth: 2, lineStyle: line.validated ? 0 : 1, title: line.label, lastValueVisible: false, priceLineVisible: false });
+                    series.setData(line.points);
+                });
+            }
+        }
 
         // Fibonacci
         if (fibEnabled && !isNaN(parseFloat(fibHigh)) && !isNaN(parseFloat(fibLow))) {
@@ -419,7 +449,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
             chart.remove();
             if (rsiChart) rsiChart.remove();
         };
-    }, [data, localStartDate, localEndDate, markers, indicators, priceLines, fibEnabled, fibHigh, fibLow, fibDir, height]);
+    }, [data, localStartDate, localEndDate, markers, indicators, priceLines, fibEnabled, fibHigh, fibLow, fibDir, height, autoAnnotate, tradeAnalysis, annotationVisibility]);
 
     // Sync drawingMode to ref so click handler always reads latest value
     useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
@@ -457,6 +487,11 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                     <button className={`btn btn-ghost ${drawingMode ? 'active' : ''}`} onClick={() => { setDrawingMode(v => !v); setCurrentDrawPoints([]); }}
                         style={{ height: '28px', padding: '0 0.65rem', fontSize: '0.73rem', gap: '0.25rem', color: drawingMode ? '#10b981' : 'var(--text-secondary)', borderColor: drawingMode ? 'rgba(16,185,129,0.5)' : 'rgba(255,255,255,0.15)' }}>
                         <Pen size={12} /> Draw
+                    </button>
+                    <button className={`btn btn-ghost ${autoAnnotate ? 'active' : ''}`} onClick={() => setAutoAnnotate(v => !v)}
+                        title="Show calculated support, resistance, and pivot trendlines"
+                        style={{ height: '28px', padding: '0 0.65rem', fontSize: '0.73rem', gap: '0.25rem', color: autoAnnotate ? '#a855f7' : 'var(--text-secondary)', borderColor: autoAnnotate ? 'rgba(168,85,247,0.5)' : 'rgba(255,255,255,0.15)' }}>
+                        <Activity size={12} /> Auto
                     </button>
                     {drawnLineSeriesRef.current.length > 0 && (
                         <button className="btn btn-ghost" onClick={() => {
@@ -631,6 +666,14 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                     </div>
                 )}
             </div>
+            <TradeSetupChecklist
+                data={data}
+                interval={currentInfo.interval}
+                startDate={localStartDate}
+                endDate={localEndDate}
+                onAnalysisChange={onTradeAnalysisChange}
+                compact={height < 450}
+            />
         </div>
     );
 };

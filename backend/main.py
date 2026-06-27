@@ -429,8 +429,15 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
-    yield
-    await yf_mcp.shutdown()
+    if not scheduler.running:
+        scheduler.start()
+    scheduler.add_job(check_signal_watches, trigger=IntervalTrigger(minutes=1), id="signal_watch_monitor", replace_existing=True, max_instances=1, coalesce=True)
+    try:
+        yield
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+        await yf_mcp.shutdown()
 
 app = FastAPI(title="TradingSpy", lifespan=lifespan)
 
@@ -520,6 +527,8 @@ watchlist_table = tdb.table("watchlists")
 sessions_table = tdb.table("optimization_sessions")
 sync_config_table = tdb.table("sync_config")
 agent_runs_table = tdb.table("agent_runs")
+signal_watches_table = tdb.table("signal_watches")
+signal_events_table = tdb.table("signal_events")
 
 # Auto-sync scheduler
 scheduler = AsyncIOScheduler()
@@ -674,6 +683,29 @@ class TradingSignalRequest(BaseModel):
     tickers: List[str]
     period: Optional[str] = "3mo"
     interval: Optional[str] = "1d"
+
+class SignalWatchRequest(BaseModel):
+    tickers: List[str]
+    direction: str = "either"  # up | down | either
+    threshold_percent: float = 2.0
+    window: str = "15m"
+    require_volume: bool = False
+    volume_multiplier: float = 1.2
+    enabled: bool = True
+
+class SignalWatchUpdateRequest(BaseModel):
+    enabled: Optional[bool] = None
+    direction: Optional[str] = None
+    threshold_percent: Optional[float] = None
+    window: Optional[str] = None
+    require_volume: Optional[bool] = None
+    volume_multiplier: Optional[float] = None
+
+class TradeSetupExplainRequest(BaseModel):
+    analysis: Dict[str, Any]
+
+class SignalEventReadRequest(BaseModel):
+    event_ids: Optional[List[str]] = None
 
 class ShareChatRequest(BaseModel):
     thread_id: str
@@ -7768,6 +7800,196 @@ async def trading_signal(request: TradingSignalRequest):
     return {"signals": signals, "period": period, "interval": interval}
 
 
+SIGNAL_WATCH_WINDOWS = {
+    "1m": {"interval": "1m", "period": "1d", "minutes": 1},
+    "5m": {"interval": "1m", "period": "1d", "minutes": 5},
+    "15m": {"interval": "5m", "period": "5d", "minutes": 15},
+    "30m": {"interval": "5m", "period": "5d", "minutes": 30},
+    "1h": {"interval": "15m", "period": "5d", "minutes": 60},
+    "1d": {"interval": "1d", "period": "3mo", "minutes": 1440},
+}
+
+def _signal_watch_state(frame, watch: Dict[str, Any]) -> Dict[str, Any]:
+    """Evaluate one persisted watch against returned OHLCV without inventing missing bars."""
+    if frame is None or frame.empty or not {"Close", "Volume"}.issubset(frame.columns):
+        return {"available": False, "reason": "Compatible OHLCV data is unavailable"}
+    clean = frame.dropna(subset=["Close"]).copy()
+    if len(clean) < 3:
+        return {"available": False, "reason": "Not enough fresh candles"}
+    try:
+        last_time = pd.Timestamp(clean.index[-1])
+        window = str(watch.get("window") or "15m")
+        if window == "1d":
+            reference = clean.iloc[-2]
+        else:
+            target = last_time - pd.Timedelta(window)
+            prior = clean.loc[clean.index <= target]
+            if prior.empty:
+                return {"available": False, "reason": f"No candle at or before the {window} window"}
+            reference = prior.iloc[-1]
+        price = float(clean["Close"].iloc[-1])
+        base = float(reference["Close"])
+        if base <= 0:
+            return {"available": False, "reason": "Invalid reference price"}
+        move = (price / base - 1) * 100
+        volume_ratio = None
+        if "Volume" in clean.columns and len(clean) >= 6:
+            baseline = clean["Volume"].iloc[-21:-1].dropna().astype(float)
+            current_volume = float(clean["Volume"].iloc[-1])
+            if not baseline.empty and baseline.mean() > 0:
+                volume_ratio = current_volume / float(baseline.mean())
+        threshold = float(watch.get("threshold_percent") or 0)
+        direction = watch.get("direction") or "either"
+        directional = move >= threshold if direction == "up" else move <= -threshold if direction == "down" else abs(move) >= threshold
+        volume_ok = not watch.get("require_volume") or (volume_ratio is not None and volume_ratio >= float(watch.get("volume_multiplier") or 1))
+        return {
+            "available": True,
+            "active": bool(directional and volume_ok),
+            "move_percent": round(move, 3),
+            "price": round(price, 4),
+            "volume_ratio": round(volume_ratio, 3) if volume_ratio is not None else None,
+            "volume_ok": volume_ok,
+            "source_interval": SIGNAL_WATCH_WINDOWS.get(window, {}).get("interval"),
+            "as_of": last_time.isoformat(),
+        }
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
+
+async def check_signal_watches():
+    """Scheduled local monitor. Events are emitted only on a threshold crossing."""
+    watches = signal_watches_table.search((Query().user_id == LOCAL_USER_ID) & (Query().enabled == True))
+    if not watches:
+        return
+    import yfinance as yf
+    for watch in watches:
+        window_config = SIGNAL_WATCH_WINDOWS.get(watch.get("window"))
+        if not window_config:
+            continue
+        previous_check = watch.get("checked_at")
+        if previous_check:
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(previous_check)).total_seconds()
+                if elapsed < window_config["minutes"] * 60:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        try:
+            dataset = await asyncio.to_thread(
+                _locked_yf_download, yf, watch.get("tickers") or [], period=window_config["period"],
+                interval=window_config["interval"], group_by="ticker", progress=False, auto_adjust=False, threads=True,
+            )
+        except Exception as exc:
+            signal_watches_table.update({"last_status": f"Data unavailable: {exc}", "checked_at": datetime.now().isoformat()}, Query().id == watch.get("id"))
+            continue
+        states = {}
+        triggered = []
+        previous = watch.get("ticker_state") or {}
+        for ticker in watch.get("tickers") or []:
+            state = _signal_watch_state(_extract_yf_ticker_frame(dataset, ticker), watch)
+            old = previous.get(ticker) or {}
+            if state.get("available"):
+                magnitude = abs(float(state.get("move_percent") or 0))
+                threshold = float(watch.get("threshold_percent") or 0)
+                was_armed = old.get("armed", True)
+                is_active = state.get("active", False)
+                if is_active and was_armed:
+                    event = {
+                        "id": str(uuid.uuid4()), "watch_id": watch.get("id"), "user_id": LOCAL_USER_ID,
+                        "ticker": ticker, "created_at": datetime.now().isoformat(), "read": False,
+                        "direction": "up" if state.get("move_percent", 0) >= 0 else "down",
+                        "move_percent": state.get("move_percent"), "price": state.get("price"),
+                        "window": watch.get("window"), "threshold_percent": threshold,
+                        "volume_ratio": state.get("volume_ratio"), "source_interval": state.get("source_interval"),
+                        "as_of": state.get("as_of"),
+                    }
+                    signal_events_table.insert(event)
+                    triggered.append(ticker)
+                    was_armed = False
+                elif not was_armed and magnitude < threshold * 0.8:
+                    was_armed = True
+                state["armed"] = was_armed
+            states[ticker] = state
+        signal_watches_table.update({
+            "ticker_state": states, "checked_at": datetime.now().isoformat(),
+            "last_status": f"Triggered: {', '.join(triggered)}" if triggered else "Monitoring",
+        }, Query().id == watch.get("id"))
+
+def _clean_signal_watch(request: SignalWatchRequest) -> Dict[str, Any]:
+    tickers = list(dict.fromkeys(str(t).upper().strip().replace("$", "") for t in request.tickers if re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,5}", str(t).strip().replace("$", ""))))[:20]
+    if not tickers:
+        raise HTTPException(status_code=400, detail="Add at least one valid ticker")
+    if request.direction not in {"up", "down", "either"}:
+        raise HTTPException(status_code=400, detail="Direction must be up, down, or either")
+    if request.window not in SIGNAL_WATCH_WINDOWS:
+        raise HTTPException(status_code=400, detail="Unsupported signal window")
+    if not 0 < request.threshold_percent <= 100:
+        raise HTTPException(status_code=400, detail="Threshold must be between 0 and 100 percent")
+    if not 0 < request.volume_multiplier <= 20:
+        raise HTTPException(status_code=400, detail="Volume multiplier must be between 0 and 20")
+    return {"tickers": tickers, "direction": request.direction, "threshold_percent": round(request.threshold_percent, 3), "window": request.window, "require_volume": request.require_volume, "volume_multiplier": round(request.volume_multiplier, 2), "enabled": request.enabled}
+
+@app.get("/api/intelligence/signal-watches")
+async def list_signal_watches():
+    return {"watches": signal_watches_table.search(Query().user_id == LOCAL_USER_ID)}
+
+@app.post("/api/intelligence/signal-watches")
+async def create_signal_watch(request: SignalWatchRequest):
+    record = _clean_signal_watch(request)
+    record.update({"id": str(uuid.uuid4()), "user_id": LOCAL_USER_ID, "created_at": datetime.now().isoformat(), "checked_at": None, "last_status": "Waiting for first check", "ticker_state": {}})
+    signal_watches_table.insert(record)
+    return record
+
+@app.patch("/api/intelligence/signal-watches/{watch_id}")
+async def update_signal_watch(watch_id: str, request: SignalWatchUpdateRequest):
+    existing = signal_watches_table.get((Query().id == watch_id) & (Query().user_id == LOCAL_USER_ID))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Signal watch not found")
+    merged = {**existing, **request.dict(exclude_none=True)}
+    clean = _clean_signal_watch(SignalWatchRequest(**merged))
+    signal_watches_table.update(clean, Query().id == watch_id)
+    return {**existing, **clean}
+
+@app.delete("/api/intelligence/signal-watches/{watch_id}")
+async def delete_signal_watch(watch_id: str):
+    signal_watches_table.remove((Query().id == watch_id) & (Query().user_id == LOCAL_USER_ID))
+    signal_events_table.remove((Query().watch_id == watch_id) & (Query().user_id == LOCAL_USER_ID))
+    return {"message": "Signal watch deleted"}
+
+@app.get("/api/intelligence/signal-events")
+async def list_signal_events(unread_only: bool = False, limit: int = 50):
+    events = signal_events_table.search(Query().user_id == LOCAL_USER_ID)
+    if unread_only:
+        events = [event for event in events if not event.get("read")]
+    events.sort(key=lambda event: event.get("created_at", ""), reverse=True)
+    return {"events": events[:max(1, min(limit, 200))], "unread_count": sum(not event.get("read") for event in signal_events_table.search(Query().user_id == LOCAL_USER_ID))}
+
+@app.post("/api/intelligence/signal-events/read")
+async def mark_signal_events_read(request: SignalEventReadRequest):
+    event_ids = request.event_ids
+    query = (Query().user_id == LOCAL_USER_ID)
+    if event_ids:
+        signal_events_table.update({"read": True}, query & Query().id.one_of(event_ids))
+    else:
+        signal_events_table.update({"read": True}, query)
+    return {"message": "Signal events marked read"}
+
+@app.post("/api/intelligence/trade-setup/explain")
+async def explain_trade_setup(request: TradeSetupExplainRequest):
+    analysis = request.analysis or {}
+    if not analysis.get("available"):
+        raise HTTPException(status_code=400, detail="A calculated trade setup is required")
+    compact = {key: analysis.get(key) for key in ("asOf", "interval", "mode", "metrics", "levels", "trendlines", "structures", "setups")}
+    settings = load_system_settings()
+    provider = normalize_app_llm_provider(settings.get("default_provider") or os.getenv("DEFAULT_PROVIDER"))
+    model = normalize_model(provider, settings.get("default_model") or os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash")
+    try:
+        explanation = await call_llm(provider, model, "You explain a deterministic trading checklist. Use only supplied facts. Do not issue buy/sell commands, invent prices, catalysts, patterns, or certainty. Keep it concise.", json.dumps(compact, default=str), json_mode=False, max_tokens=450)
+        return {"explanation": _sanitize_assistant_response(str(explanation or "")).strip()}
+    except Exception as exc:
+        logger.warning("trade setup explanation unavailable: %s", exc)
+        return {"explanation": "Model explanation is unavailable. The calculated checklist and levels remain available.", "unavailable": True}
+
+
 # Simple TTL cache for yfinance data to reduce rate limiting
 _yf_cache = {}
 _yf_cache_lock = threading.Lock()
@@ -10009,5 +10231,6 @@ if __name__ == "__main__":
     try:
         uvicorn.run(app, host="0.0.0.0", port=8000)
     finally:
-        scheduler.shutdown()
+        if scheduler.running:
+            scheduler.shutdown()
         logger.info("Scheduler shut down")

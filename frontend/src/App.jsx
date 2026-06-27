@@ -483,6 +483,7 @@ const App = () => {
               <IndustryMovements
                 notify={notify}
                 onExplain={(prompt, label) => explainWithAssistant(prompt, label)}
+                onOpenChart={(ticker) => handleViewChart(ticker)}
               />
             </motion.div>
           )}
@@ -506,7 +507,6 @@ const App = () => {
                />
             </motion.div>
           )}
-          {/* Data Hub tab hidden — covered by Asset Library + download buttons
           {activeTab === 'data' && (
             <motion.div key="data" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               {previewData && (
@@ -534,7 +534,6 @@ const App = () => {
               />
             </motion.div>
           )}
-          */}
           {/* Arsenal tab hidden — strategies shown inline in Battle Station
           {activeTab === 'library' && (
             <motion.div key="library" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
