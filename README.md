@@ -1,8 +1,10 @@
 # TradingSpy
 
-Local-first AI trading research, market intelligence, strategy generation, and Backtrader backtesting in one Docker Compose stack.
+**An AI trading research workbench that shows its work—and tests its ideas.**
 
-TradingSpy lets you chat with market data, inspect heatmaps and news catalysts, generate Python strategies, and compare real backtest results without connecting a brokerage account. It does not place trades.
+Explore market context, generate Backtrader strategies, and verify them against real historical candles in one local Docker Compose stack. TradingSpy does not connect to a brokerage or place trades.
+
+[Quick Start](#quick-start-with-docker) · [How It Works](#how-it-works) · [First Run](#first-run) · [Local Development](#local-development-without-docker) · [API](#openai-compatible-api) · [Contributing](#contributing)
 
 ## Highlights
 
@@ -12,6 +14,24 @@ TradingSpy lets you chat with market data, inspect heatmaps and news catalysts, 
 - Local data storage with no hosted TradingSpy account required.
 - Google AI Studio, Mistral, OpenRouter, and LiteLLM support.
 - OpenAI-compatible local API for scripts and other agent clients.
+
+## How It Works
+
+TradingSpy turns a research request into an inspectable workflow instead of returning an unsupported answer and calling it done.
+
+```mermaid
+flowchart LR
+    Ask["Ask a market or strategy question"] --> Context["Collect market context and data"]
+    Context --> Draft["Generate strategy candidates"]
+    Draft --> Validate["Validate Python and trade activity"]
+    Validate --> Backtest["Run Backtrader backtests"]
+    Backtest --> Compare["Compare with buy-and-hold or a saved strategy"]
+    Validate -- "invalid or zero trades" --> Draft
+    Compare -- "underperforms" --> Draft
+    Compare -- "accepted" --> Review["Review code, evidence, and result"]
+```
+
+The Task Center keeps the plan, progress, tool calls, validation failures, benchmark target, and accepted result visible while longer workflows run.
 
 ## Quick Start With Docker
 
@@ -151,16 +171,25 @@ Keys may be stored in `.env`/`backend/.env` or entered in Settings. Never commit
 
 See [.env.example](.env.example) for every supported setting.
 
-## First Things To Try
+## First Run
 
-After opening the app, try:
+The quickest end-to-end check is:
+
+```text
+Download daily QQQ data for one year, then generate candidates until one beats buy and hold. Reject anything with zero trades.
+```
+
+Then:
+
+1. Open the Task Center and watch the workflow collect data, generate candidates, and backtest them.
+2. Inspect rejected candidates instead of treating failures as hidden retries.
+3. Review the accepted strategy code and its benchmark comparison.
+4. Select **Continue** to make the next run improve on the accepted version.
+
+Other useful prompts:
 
 ```text
 Explain today's market and strongest sectors using current heatmap data and fresh news.
-```
-
-```text
-Download daily QQQ data for one year, then generate and backtest an RSI and volume strategy.
 ```
 
 ```text
@@ -170,8 +199,6 @@ Generate candidates until one beats buy and hold for QQQ. Reject strategies with
 ```text
 Find undervalued profitable semiconductor stocks and explain the evidence.
 ```
-
-Agent runs appear in the Task Center and expose their plan, progress, tool results, validation failures, and final outcome.
 
 ## What TradingSpy Includes
 
@@ -195,6 +222,23 @@ Agent runs appear in the Task Center and expose their plan, progress, tool resul
 - Persistent background workflows for strategy races, market reviews, and screens.
 - OpenAI-compatible `/v1/chat/completions` interface.
 - Optional ACP and A2A outputs for trusted local integrations.
+
+## Supported Markets And Symbols
+
+TradingSpy uses Yahoo Finance-compatible symbols for candle downloads and market context. Examples include:
+
+| Market | Examples |
+| --- | --- |
+| United States | `AAPL`, `NVDA`, `QQQ`, `SPY` |
+| London | `AZN.L`, `HSBA.L` |
+| Hong Kong | `0700.HK` |
+| Japan | `7203.T` |
+| India | `RELIANCE.NS` |
+| Canada | `SHOP.TO` |
+| Australia | `BHP.AX` |
+| Crypto pairs | `BTC-USD`, `ETH-USD` |
+
+Availability, history depth, fundamentals, insider records, and intraday intervals vary by symbol and upstream data source.
 
 ## Architecture
 
@@ -307,6 +351,18 @@ docker compose config --quiet
 
 The direct Python dependencies live in `backend/requirements.in`; `backend/requirements.txt` is the generated lock file used by Docker and local installs.
 
+## Reproducibility
+
+TradingSpy separates evidence that can be reproduced from output that naturally changes:
+
+- A saved strategy run against the same local candles, dates, capital, commission, and parameters should produce the same backtest result.
+- LLM-generated strategy code is non-deterministic and can differ between runs, even with the same prompt.
+- Live quotes, fundamentals, insider records, heatmaps, and news change over time.
+- Model aliases and upstream provider behavior may change. Use an explicit model ID when comparing experiments.
+- Backtest performance depends on the selected period and assumptions; it is not a promise of future returns.
+
+Keep the dataset, generated strategy, benchmark, and run details together when sharing a result.
+
 ## Safety
 
 - TradingSpy is experimental research software, not financial advice or a trading signal service.
@@ -319,7 +375,7 @@ See [SECURITY.md](SECURITY.md) for the full security policy.
 
 ## Contributing
 
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and use [SUPPORT.md](SUPPORT.md) when reporting a problem.
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), review current work in [CHANGELOG.md](CHANGELOG.md), and use [SUPPORT.md](SUPPORT.md) when reporting a problem.
 
 ## License
 
