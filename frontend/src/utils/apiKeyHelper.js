@@ -5,7 +5,7 @@
 
 const DEFAULT_PROVIDER = 'google_ai_studio';
 const DEFAULT_MODEL = 'gemini-2.5-flash';
-const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter', 'litellm']);
+const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter', 'litellm', 'ollama']);
 
 const normalizeProvider = (provider) => {
     const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
@@ -36,7 +36,10 @@ export const getApiSettings = () => {
     const model = isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL;
     
     const storedKey = localStorage.getItem(keyMap[provider] || keyMap[DEFAULT_PROVIDER]) || '';
-    const api_key = storedKey;
+    const api_key = provider === 'ollama' ? 'ollama' : storedKey;
+    const provider_config = provider === 'ollama' && localStorage.getItem('settings_ollama_base_url')
+        ? { ollama_base_url: localStorage.getItem('settings_ollama_base_url') }
+        : undefined;
     
     console.log('🔑 [apiKeyHelper] getApiSettings called:', {
         provider,
@@ -45,11 +48,12 @@ export const getApiSettings = () => {
         localStorageKey: keyMap[provider]
     });
     
-    return { provider, model, api_key };
+    return { provider, model, api_key, provider_config };
 };
 
 export const getApiKey = (provider) => {
     provider = normalizeProvider(provider);
+    if (provider === 'ollama') return 'ollama';
     
     const storedKey = localStorage.getItem(keyMap[provider] || keyMap[DEFAULT_PROVIDER]) || '';
     return storedKey;

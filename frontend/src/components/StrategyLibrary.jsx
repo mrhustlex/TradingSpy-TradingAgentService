@@ -80,14 +80,15 @@ const StrategyLibrary = ({ strategies, onRefresh, notify }) => {
         if (!aiInstruction.trim()) return;
         setAiLoading(true);
         try {
-            const { provider, model, api_key } = getApiSettings();
+            const { provider, model, api_key, provider_config } = getApiSettings();
             const res = await axios.post(`${BACKTEST_SERVICE}/strategies/ai-edit`, {
                 name: editingStrat.name,
                 instruction: aiInstruction,
                 code: code,
                 provider,
                 api_key,
-                model
+                model,
+                provider_config,
             });
 
             if (res.data.code) {

@@ -12,6 +12,7 @@ const SUPPORTED_PROVIDERS = [
     { value: 'mistral', label: 'Mistral AI' },
     { value: 'openrouter', label: 'OpenRouter' },
     { value: 'litellm', label: 'LiteLLM' },
+    { value: 'ollama', label: 'Ollama (Local)' },
 ];
 const SUPPORTED_PROVIDER_VALUES = new Set(SUPPORTED_PROVIDERS.map(provider => provider.value));
 const normalizeProvider = (provider) => {
@@ -30,7 +31,7 @@ const isSupportedProviderInput = (provider) => {
 // Keys that live in localStorage only — never sent to the server
 const LS_KEY = (k) => `settings_${k}`;
 const KEY_FIELDS = ['openrouter_api_key','google_ai_studio_api_key','mistral_api_key','litellm_api_key','tavily_api_key'];
-const LOCAL_CONFIG_FIELDS = ['litellm_base_url'];
+const LOCAL_CONFIG_FIELDS = ['litellm_base_url', 'ollama_base_url'];
 
 function loadLocalKeys() {
     const out = {};
@@ -62,6 +63,7 @@ const INITIAL_SETTINGS = {
     mistral_api_key: '',
     litellm_api_key: '',
     litellm_base_url: 'http://localhost:4000/v1',
+    ollama_base_url: '',
     tavily_api_key: '',
     // non-sensitive — server
     default_provider: DEFAULT_PROVIDER,
@@ -223,6 +225,7 @@ const Settings = ({ notify }) => {
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
                 litellm_base_url,
+                ollama_base_url,
                 remote_agent_auth_token,
             } = settings;
             const serverPayload = {
@@ -232,6 +235,7 @@ const Settings = ({ notify }) => {
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
                 litellm_base_url,
+                ollama_base_url,
             };
             if (remote_agent_auth_token !== '') {
                 serverPayload.remote_agent_auth_token = remote_agent_auth_token;
@@ -292,7 +296,13 @@ const Settings = ({ notify }) => {
                             <select
                                 className="input"
                                 value={settings.default_provider}
-                                onChange={(e) => updateSetting('default_provider', e.target.value)}
+                                onChange={(e) => {
+                                    const provider = e.target.value;
+                                    updateSetting('default_provider', provider);
+                                    if (provider === 'ollama' && settings.default_model === DEFAULT_MODEL) {
+                                        updateSetting('default_model', 'qwen2.5-coder:7b');
+                                    }
+                                }}
                             >
                                 {SUPPORTED_PROVIDERS.map(provider => (
                                     <option key={provider.value} value={provider.value}>{provider.label}</option>
@@ -308,7 +318,7 @@ const Settings = ({ notify }) => {
                             </label>
                             <input
                                 className="input"
-                                placeholder="gemini-2.5-flash, mistral-large-latest, openrouter model id..."
+                                placeholder="gemini-2.5-flash, mistral-large-latest, qwen2.5-coder:7b..."
                                 value={settings.default_model}
                                 onChange={(e) => updateSetting('default_model', e.target.value)}
                             />
@@ -356,6 +366,21 @@ const Settings = ({ notify }) => {
                                     <div style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: '0.35rem' }}>Use your LiteLLM proxy OpenAI-compatible base URL.</div>
                                 </div>
                             </>
+                        )}
+
+                        {settings.default_provider === 'ollama' && (
+                            <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                                <label>Ollama Base URL</label>
+                                <input
+                                    className="input"
+                                    value={settings.ollama_base_url}
+                                    onChange={(e) => updateSetting('ollama_base_url', e.target.value)}
+                                    placeholder="Leave blank to use the server default"
+                                />
+                                <div style={{ fontSize: '0.72rem', opacity: 0.65, marginTop: '0.35rem' }}>
+                                    No API key is required. Docker defaults to <code>http://host.docker.internal:11434/v1</code>; local development defaults to <code>http://localhost:11434/v1</code>.
+                                </div>
+                            </div>
                         )}
 
                     </div>

@@ -52,13 +52,13 @@ const normalizeSupportedProvider = (provider) => {
   const p = (provider || 'google_ai_studio').trim().toLowerCase().replace(/[-\s]/g, '_');
   if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
   if (p === 'lite_llm' || p === 'lite') return 'litellm';
-  return ['google_ai_studio', 'mistral', 'openrouter', 'litellm'].includes(p) ? p : 'google_ai_studio';
+  return ['google_ai_studio', 'mistral', 'openrouter', 'litellm', 'ollama'].includes(p) ? p : 'google_ai_studio';
 };
 const isSupportedProviderInput = (provider) => {
   const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
   let normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
   if (normalized === 'lite_llm' || normalized === 'lite') normalized = 'litellm';
-  return ['google_ai_studio', 'mistral', 'openrouter', 'litellm'].includes(normalized);
+  return ['google_ai_studio', 'mistral', 'openrouter', 'litellm', 'ollama'].includes(normalized);
 };
 const isAgentTerminal = (status) => AGENT_TERMINAL_STATUSES.has(status);
 const formatAgentElapsed = (seconds) => {
@@ -468,6 +468,50 @@ const App = () => {
       )}
 
       <main className={`main-content ${activeTab === 'chat' ? 'main-content--chat' : ''}`} style={activeTab === 'chat' ? { padding: 0, overflow: 'hidden' } : {}}>
+        <div hidden={activeTab !== 'studio'}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <AIStrategyStudio
+              onTrigger={(id, type, desc) => addTask(id, type, desc)}
+              onRefreshStrats={fetchStrategies}
+              tasks={tasks}
+              notify={notify}
+              files={files}
+              strategies={strategies}
+            />
+
+            <div className="panel" style={{ padding: '1.25rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>Legacy Generator Tools</div>
+                  <div style={{ fontSize: '0.85rem', opacity: 0.6 }}>
+                    Advanced fallback for features not yet moved into Studio.
+                  </div>
+                </div>
+                <button
+                  className={showLegacyGenerator ? 'btn btn-ghost' : 'btn btn-primary'}
+                  onClick={() => setShowLegacyGenerator(prev => !prev)}
+                >
+                  <Wand2 size={16} />
+                  {showLegacyGenerator ? 'Hide Legacy Tools' : 'Open Legacy Tools'}
+                </button>
+              </div>
+
+              {showLegacyGenerator && (
+                <div style={{ marginTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '1rem' }}>
+                  <AIForge
+                    onTrigger={(id, type, desc) => addTask(id, type, desc)}
+                    onRefreshStrats={fetchStrategies}
+                    tasks={tasks}
+                    notify={notify}
+                    files={files}
+                    strategies={strategies}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         <AnimatePresence mode="wait">
           {activeTab === 'heatmap' && (
             <motion.div key="heatmap" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
@@ -578,51 +622,6 @@ const App = () => {
                 }}
                 onSwitchTab={setActiveTab}
               />
-            </motion.div>
-          )}
-          {activeTab === 'studio' && (
-            <motion.div key="studio" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                <AIStrategyStudio
-                  onTrigger={(id, type, desc) => addTask(id, type, desc)}
-                  onRefreshStrats={fetchStrategies}
-                  tasks={tasks}
-                  notify={notify}
-                  files={files}
-                  strategies={strategies}
-                />
-
-                <div className="panel" style={{ padding: '1.25rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                    <div>
-                      <div style={{ fontWeight: 700, marginBottom: '0.25rem' }}>Legacy Generator Tools</div>
-                      <div style={{ fontSize: '0.85rem', opacity: 0.6 }}>
-                        Advanced fallback for features not yet moved into Studio.
-                      </div>
-                    </div>
-                    <button
-                      className={showLegacyGenerator ? 'btn btn-ghost' : 'btn btn-primary'}
-                      onClick={() => setShowLegacyGenerator(prev => !prev)}
-                    >
-                      <Wand2 size={16} />
-                      {showLegacyGenerator ? 'Hide Legacy Tools' : 'Open Legacy Tools'}
-                    </button>
-                  </div>
-
-                  {showLegacyGenerator && (
-                    <div style={{ marginTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '1rem' }}>
-                      <AIForge
-                        onTrigger={(id, type, desc) => addTask(id, type, desc)}
-                        onRefreshStrats={fetchStrategies}
-                        tasks={tasks}
-                        notify={notify}
-                        files={files}
-                        strategies={strategies}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
             </motion.div>
           )}
           {activeTab === 'insider' && (

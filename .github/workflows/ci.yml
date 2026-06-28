@@ -23,6 +23,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm audit --audit-level=high
+      - run: npm test
       - run: npm run build
 
   backend:

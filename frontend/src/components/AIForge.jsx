@@ -146,7 +146,7 @@ const AIForge = ({ onTrigger, onRefreshStrats, tasks, notify, files, strategies 
             return;
         }
 
-        const { provider, model, api_key } = getApiSettings();
+        const { provider, model, api_key, provider_config } = getApiSettings();
         if (!api_key) {
             notify('⚠️ No API key configured. Go to Setup in the sidebar to add your API key.', 'red');
             return;
@@ -179,7 +179,8 @@ Please optimize the strategy logic specifically for this dataset's characteristi
                 target_category: targetCategory,
                 provider,
                 model,
-                api_key
+                api_key,
+                provider_config,
             });
 
             setActiveTaskId(res.data.task_id);

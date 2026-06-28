@@ -12,6 +12,8 @@ const initialState = {
   savedNames: [],
   results: null,
   error: null,
+  invalidCandidates: [],
+  researchSources: [],
 };
 
 export default function useGenerationStream(taskId) {
@@ -51,6 +53,8 @@ export default function useGenerationStream(taskId) {
         savedNames: data.saved_names || prev.savedNames,
         results: data.results || prev.results,
         error: data.error || prev.error,
+        invalidCandidates: data.invalid_candidates || prev.invalidCandidates,
+        researchSources: data.research_sources || prev.researchSources,
       }));
     };
 
@@ -99,6 +103,7 @@ export default function useGenerationStream(taskId) {
                   progress: event.progress ?? prev.progress,
                   current: event.current || prev.current,
                   marketAnalysis: event.market_analysis || prev.marketAnalysis,
+                  researchSources: event.research_sources || prev.researchSources,
                 }));
               } else if (event.type === 'token') {
                 setState(prev => ({
@@ -134,6 +139,7 @@ export default function useGenerationStream(taskId) {
                   current: event.current || 'Generation complete',
                   results: event.results || prev.results,
                   savedNames: event.saved_names || prev.savedNames,
+                  researchSources: event.results?.research_sources || prev.researchSources,
                 }));
                 return;
               } else if (event.type === 'error') {
@@ -142,6 +148,14 @@ export default function useGenerationStream(taskId) {
                   status: 'failed',
                   error: event.error || 'Unknown error',
                   current: event.current || 'Generation failed',
+                  invalidCandidates: event.invalid_candidates || prev.invalidCandidates,
+                }));
+                return;
+              } else if (event.type === 'cancelled') {
+                setState(prev => ({
+                  ...prev,
+                  status: 'cancelled',
+                  current: event.current || 'Generation cancelled',
                 }));
                 return;
               }
@@ -170,7 +184,7 @@ export default function useGenerationStream(taskId) {
           if (response.ok) {
             const data = await response.json();
             applySnapshot(data);
-            if (data.status === 'completed' || data.status === 'failed' || data.status?.startsWith?.('failed')) {
+            if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled' || data.status?.startsWith?.('failed')) {
               return;
             }
           }

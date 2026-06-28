@@ -12,7 +12,7 @@ Explore market context, generate Backtrader strategies, and verify them against 
 - Market, sector, industry, news, insider, and technical context.
 - Backtrader strategy generation, validation, optimization, and benchmark comparisons.
 - Local data storage with no hosted TradingSpy account required.
-- Google AI Studio, Mistral, OpenRouter, and LiteLLM support.
+- Google AI Studio, Mistral, OpenRouter, LiteLLM, and local Ollama support.
 - OpenAI-compatible local API for scripts and other agent clients.
 
 ## How It Works
@@ -41,7 +41,7 @@ This is the recommended installation path.
 
 - Git.
 - Docker Desktop, or Docker Engine with Docker Compose v2.
-- An API key for at least one supported LLM provider. The app will start without one, but AI features require a key.
+- An API key for a hosted LLM provider, or a local Ollama installation. The app starts without either, but AI features require one configured model.
 
 ### 1. Clone and configure
 
@@ -60,6 +60,23 @@ DEFAULT_MODEL=gemini-2.5-flash
 ```
 
 You may leave the keys blank and configure a provider later from the app's Settings page.
+
+To use Ollama instead of a hosted provider, [install Ollama](https://docs.ollama.com/quickstart), pull a model, and configure the local provider:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+Set these values in `.env`:
+
+```bash
+DEFAULT_PROVIDER=ollama
+DEFAULT_MODEL=qwen2.5-coder:7b
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+```
+
+Ollama normally runs in the background after installation. If needed, start it manually with `ollama serve` before starting TradingSpy.
+TradingSpy connects through Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility).
 
 ### 2. Start TradingSpy
 
@@ -115,6 +132,20 @@ cp .env.example backend/.env
 
 Add one provider key to `backend/.env`, or configure it later in the UI.
 
+For local Ollama development, no key is required:
+
+```bash
+ollama pull qwen2.5-coder:7b
+```
+
+Then set the following in `backend/.env`:
+
+```bash
+DEFAULT_PROVIDER=ollama
+DEFAULT_MODEL=qwen2.5-coder:7b
+OLLAMA_BASE_URL=http://localhost:11434/v1
+```
+
 ### 2. Start the backend
 
 Run in the first terminal:
@@ -168,6 +199,7 @@ Keys may be stored in `.env`/`backend/.env` or entered in Settings. Never commit
 | Mistral | `MISTRAL_API_KEY` | `mistral-large-latest` |
 | OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | LiteLLM | `LITELLM_API_KEY`, `LITELLM_BASE_URL` | Your proxy's model ID |
+| Ollama (local) | `OLLAMA_BASE_URL`; no API key | `qwen2.5-coder:7b` |
 
 See [.env.example](.env.example) for every supported setting.
 
@@ -252,6 +284,7 @@ flowchart LR
     Backend --> Store["Local data under backend/data"]
     Backend --> Search["SearXNG"]
     Agents --> LLM["Configured LLM provider"]
+    Backend --> Ollama["Optional local Ollama"]
 ```
 
 The Docker setup binds all services to `127.0.0.1`:
@@ -327,6 +360,18 @@ docker compose up -d --force-recreate backend
 ```
 
 Alternatively, save the key from Settings in the application.
+
+### Ollama cannot be reached
+
+Confirm Ollama is running and the selected model is installed:
+
+```bash
+ollama list
+ollama pull qwen2.5-coder:7b
+curl http://localhost:11434/api/tags
+```
+
+For Docker, keep `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1`. For a backend running directly on the host, use `http://localhost:11434/v1`. If Ollama only listens on loopback inside another machine or container, expose it deliberately and review the security implications first.
 
 ### The frontend opens but the API is unavailable
 

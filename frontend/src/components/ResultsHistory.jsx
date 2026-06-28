@@ -126,7 +126,7 @@ const ResultsHistory = ({ onAnalyze, notify, files = [], onTrigger, onRefreshStr
         if (!evolutionInstruction) return;
         setIsEvolving(true);
 
-        const { provider, model, api_key } = getApiSettings();
+        const { provider, model, api_key, provider_config } = getApiSettings();
 
         try {
             const res = await axios.post(`${BACKTEST_SERVICE}/strategies/ai-edit`, {
@@ -135,7 +135,8 @@ const ResultsHistory = ({ onAnalyze, notify, files = [], onTrigger, onRefreshStr
                 instruction: evolutionInstruction,
                 api_key,
                 provider,
-                model
+                model,
+                provider_config,
             });
             setEvolvedCode(res.data.code);
             notify("AI successfully evolved the logic!", "green");

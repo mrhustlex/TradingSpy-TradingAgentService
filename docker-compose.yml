@@ -15,6 +15,7 @@ services:
       MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://localhost:4000/v1}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-google_ai_studio}
       DEFAULT_MODEL: ${DEFAULT_MODEL:-gemini-2.5-flash}
       REMOTE_AGENT_AUTH_TOKEN: ${REMOTE_AGENT_AUTH_TOKEN:-}
@@ -31,6 +32,8 @@ services:
       retries: 3
       start_period: 40s
     restart: always
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - tradingspy
 

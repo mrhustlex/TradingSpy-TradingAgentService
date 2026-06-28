@@ -18,6 +18,7 @@ const API_PROVIDERS = [
     { value: 'mistral', label: 'Mistral' },
     { value: 'openrouter', label: 'OpenRouter' },
     { value: 'litellm', label: 'LiteLLM' },
+    { value: 'ollama', label: 'Ollama (Local)' },
 ];
 const API_PROVIDER_VALUES = new Set(API_PROVIDERS.map(provider => provider.value));
 const API_KEY_STORAGE = {
@@ -27,6 +28,7 @@ const API_KEY_STORAGE = {
     gemini: 'settings_google_ai_studio_api_key',
     mistral: 'settings_mistral_api_key',
     litellm: 'settings_litellm_api_key',
+    ollama: 'settings_ollama_api_key',
 };
 const AGENT_TERMINAL_STATUSES = ['completed', 'failed', 'stopped', 'stale'];
 const isAgentTerminalStatus = (status) => AGENT_TERMINAL_STATUSES.includes(status);
@@ -144,6 +146,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     // Read the active API key from localStorage based on provider
     const getActiveApiKey = (provider) => {
         const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
+        if (p === 'ollama') return 'ollama';
         if (p === 'litellm' && localStorage.getItem('settings_litellm_base_url')) return true;
         const keyStorage = API_KEY_STORAGE[p] || API_KEY_STORAGE[DEFAULT_PROVIDER];
         const storedKey = localStorage.getItem(keyStorage) || null;
@@ -171,10 +174,14 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             cfg.litellm_api_key = localStorage.getItem('settings_litellm_api_key') || '';
             cfg.litellm_base_url = localStorage.getItem('settings_litellm_base_url') || '';
         }
+        if (p === 'ollama' && localStorage.getItem('settings_ollama_base_url')) {
+            cfg.ollama_base_url = localStorage.getItem('settings_ollama_base_url');
+        }
         return Object.fromEntries(Object.entries(cfg).filter(([, value]) => value !== ''));
     };
     const hasConfiguredApiKey = (provider) => {
         const p = normalizeProvider(provider || aiConfig.provider || localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER);
+        if (p === 'ollama') return true;
         const keyStorage = API_KEY_STORAGE[p] || API_KEY_STORAGE[DEFAULT_PROVIDER];
         const serverConfigured = localStorage.getItem(`${keyStorage}_configured`) === 'true';
         return Boolean(localStorage.getItem(keyStorage) || serverConfigured);
@@ -242,6 +249,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             model: isSupportedProviderInput(rawProvider) ? (localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
             apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
             litellmBaseUrl: localStorage.getItem('settings_litellm_base_url') || 'http://localhost:4000/v1',
+            ollamaBaseUrl: localStorage.getItem('settings_ollama_base_url') || '',
         };
     });
     
@@ -352,6 +360,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             model: isSupportedProviderInput(rawProvider) ? (aiConfig.model || localStorage.getItem('settings_default_model') || DEFAULT_MODEL) : DEFAULT_MODEL,
             apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
             litellmBaseUrl: localStorage.getItem('settings_litellm_base_url') || 'http://localhost:4000/v1',
+            ollamaBaseUrl: localStorage.getItem('settings_ollama_base_url') || '',
         });
     }, [apiPanelOpen, aiConfig.provider, aiConfig.model]);
 
@@ -416,11 +425,18 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         if (provider === 'litellm') {
             localStorage.setItem('settings_litellm_base_url', apiDraft.litellmBaseUrl?.trim() || 'http://localhost:4000/v1');
         }
+        if (provider === 'ollama') {
+            localStorage.setItem('settings_ollama_base_url', apiDraft.ollamaBaseUrl?.trim() || '');
+        }
         setAiConfig({ provider, model });
         window.dispatchEvent(new CustomEvent('tradingspy:llm-settings-updated'));
         setApiPanelOpen(false);
         try {
-            await axios.post(SETTINGS_URL, { default_provider: provider, default_model: model });
+            await axios.post(SETTINGS_URL, {
+                default_provider: provider,
+                default_model: model,
+                ...(provider === 'ollama' && apiDraft.ollamaBaseUrl?.trim() ? { ollama_base_url: apiDraft.ollamaBaseUrl.trim() } : {}),
+            });
             notify?.('Assistant API settings saved.', 'green');
         } catch {
             notify?.('Assistant API saved in browser. Server settings were not updated.', 'yellow');
@@ -4221,8 +4237,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 setApiDraft(prev => ({
                                     ...prev,
                                     provider,
+                                    model: provider === 'ollama' && prev.model === DEFAULT_MODEL ? 'qwen2.5-coder:7b' : prev.model,
                                     apiKey: localStorage.getItem(API_KEY_STORAGE[provider] || API_KEY_STORAGE[DEFAULT_PROVIDER]) || '',
                                     litellmBaseUrl: localStorage.getItem('settings_litellm_base_url') || 'http://localhost:4000/v1',
+                                    ollamaBaseUrl: localStorage.getItem('settings_ollama_base_url') || '',
                                 }));
                             }}
                             style={{ width: '100%', marginBottom: '0.8rem' }}
@@ -4246,19 +4264,24 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 type={showApiKey ? 'text' : 'password'}
                                 value={apiDraft.apiKey}
                                 onChange={(e) => setApiDraft(prev => ({ ...prev, apiKey: e.target.value }))}
+                                disabled={normalizeProvider(apiDraft.provider) === 'ollama'}
                                 placeholder={
-                                    localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE[DEFAULT_PROVIDER]}_configured`) === 'true'
+                                    normalizeProvider(apiDraft.provider) === 'ollama'
+                                        ? 'No API key required'
+                                        : localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE[DEFAULT_PROVIDER]}_configured`) === 'true'
                                         ? 'Server/environment key available'
                                         : 'Enter a browser-local key'
                                 }
                                 style={{ flex: 1 }}
                             />
-                            <button className="btn btn-ghost" type="button" onClick={() => setShowApiKey(value => !value)} title={showApiKey ? 'Hide API key' : 'Show API key'}>
+                            {normalizeProvider(apiDraft.provider) !== 'ollama' && <button className="btn btn-ghost" type="button" onClick={() => setShowApiKey(value => !value)} title={showApiKey ? 'Hide API key' : 'Show API key'}>
                                 {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                            </button>
+                            </button>}
                         </div>
                         <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: '0.45rem 0 1rem', lineHeight: 1.5 }}>
-                            {localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE[DEFAULT_PROVIDER]}_configured`) === 'true'
+                            {normalizeProvider(apiDraft.provider) === 'ollama'
+                                ? 'Ollama runs locally and does not require an API key.'
+                                : localStorage.getItem(`${API_KEY_STORAGE[normalizeProvider(apiDraft.provider)] || API_KEY_STORAGE[DEFAULT_PROVIDER]}_configured`) === 'true'
                                 ? 'A server/environment key is configured but hidden. Leave this blank to use it, or type a browser-local override.'
                                 : 'Saved in this browser only. It is not shown again on other browsers or devices.'}
                         </div>
@@ -4270,6 +4293,18 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                     value={apiDraft.litellmBaseUrl}
                                     onChange={(e) => setApiDraft(prev => ({ ...prev, litellmBaseUrl: e.target.value }))}
                                     placeholder="http://localhost:4000/v1"
+                                    style={{ width: '100%', marginBottom: '1rem' }}
+                                />
+                            </>
+                        )}
+                        {normalizeProvider(apiDraft.provider) === 'ollama' && (
+                            <>
+                                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: '0.4rem' }}>Ollama base URL</label>
+                                <input
+                                    className="input"
+                                    value={apiDraft.ollamaBaseUrl}
+                                    onChange={(e) => setApiDraft(prev => ({ ...prev, ollamaBaseUrl: e.target.value }))}
+                                    placeholder="Leave blank to use the backend default"
                                     style={{ width: '100%', marginBottom: '1rem' }}
                                 />
                             </>
