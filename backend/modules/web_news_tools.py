@@ -10,6 +10,7 @@ import logging
 import ipaddress
 import socket
 import time
+from io import BytesIO
 from urllib.parse import urlparse, urljoin
 
 logger = logging.getLogger(__name__)
@@ -124,18 +125,20 @@ def web_search(query: str) -> dict:
 
 
 @tool
-def fetch_website(url: str) -> dict:
+def fetch_website(url: str, max_chars: int = 2000) -> dict:
     """Fetch and extract content from a website URL.
     Use this to get the full content from a specific URL found via web_search.
     
     Args:
         url: The website URL to fetch (e.g., 'https://example.com/article')
+        max_chars: Maximum extracted text to return (bounded to 20,000)
     
     Returns:
         dict with 'url', 'title', 'content', and 'status'
     """
     try:
         url = _validate_public_http_url(url)
+        max_chars = max(500, min(int(max_chars or 2000), 20000))
         logger.info(f"fetch_website: Fetching {url}")
         
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -182,8 +185,7 @@ def fetch_website(url: str) -> dict:
             chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
             content = ' '.join(chunk for chunk in chunks if chunk)
             
-            # Limit content to first 2000 characters
-            content = content[:2000]
+            content = content[:max_chars]
             
             logger.info(f"fetch_website: Successfully fetched {len(content)} chars from {url}")
             
@@ -196,7 +198,7 @@ def fetch_website(url: str) -> dict:
             }
         except ImportError:
             # BeautifulSoup not available, return raw text
-            content = resp.text[:2000]
+            content = resp.text[:max_chars]
             return {
                 "url": url,
                 "status": "success",
@@ -216,9 +218,78 @@ def fetch_website(url: str) -> dict:
         }
 
 
-def _fallback_duckduckgo_search(query: str) -> dict:
-    """Fallback to DuckDuckGo if SearXNG is unavailable"""
+@tool
+def fetch_pdf_text(url: str, max_chars: int = 12000) -> dict:
+    """Download a public PDF and extract a bounded amount of text."""
     try:
+        url = _validate_public_http_url(url)
+        max_chars = max(1000, min(int(max_chars or 12000), 20000))
+        headers = {"User-Agent": "TradingSpy/1.0 (public research mode)"}
+        response = None
+        for _ in range(4):
+            response = requests.get(url, headers=headers, timeout=25, allow_redirects=False)
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                break
+            location = response.headers.get("location")
+            if not location:
+                break
+            url = _validate_public_http_url(urljoin(url, location))
+        if response is None or response.status_code != 200:
+            status = response.status_code if response is not None else "no response"
+            return {"url": url, "status": "error", "error": f"HTTP {status}", "content": ""}
+        if len(response.content) > 12 * 1024 * 1024:
+            return {"url": url, "status": "error", "error": "PDF exceeds the 12 MB research limit", "content": ""}
+
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(response.content))
+        chunks = []
+        for page in reader.pages[:20]:
+            chunks.append(page.extract_text() or "")
+            if sum(len(chunk) for chunk in chunks) >= max_chars:
+                break
+        content = " ".join(" ".join(chunks).split())[:max_chars]
+        return {
+            "url": url,
+            "status": "success" if content else "error",
+            "title": "PDF document",
+            "content": content,
+            "length": len(content),
+            "pages_scanned": min(len(reader.pages), 20),
+        }
+    except Exception as exc:
+        logger.warning("fetch_pdf_text error for %s: %s", url, exc)
+        return {"url": url, "status": "error", "error": str(exc), "content": ""}
+
+
+def _fallback_duckduckgo_search(query: str) -> dict:
+    """Fallback to DuckDuckGo HTML search if SearXNG is unavailable.
+
+    Uses html.duckduckgo.com/html/ to get actual search results with
+    titles, snippets, and URLs (not just instant answers).
+    """
+    import re as _re
+    try:
+        from bs4 import BeautifulSoup as _BeautifulSoup
+    except ImportError:
+        _BeautifulSoup = None
+
+    try:
+        # Try HTML search first (real search results)
+        if _BeautifulSoup:
+            html_results = _scrape_duckduckgo_html(query)
+            if html_results and len(html_results) > 0:
+                logger.info(
+                    "web_search via DuckDuckGo HTML fallback: %s results for '%s'",
+                    len(html_results), query,
+                )
+                return {
+                    "query": query,
+                    "results": html_results,
+                    "source": "DuckDuckGo",
+                    "count": len(html_results),
+                }
+
+        # Fall back to instant answer API
         resp = None
         for attempt in range(3):
             resp = requests.get(
@@ -232,7 +303,7 @@ def _fallback_duckduckgo_search(query: str) -> dict:
             )
             if resp.status_code != 202:
                 break
-            logger.info("DuckDuckGo fallback returned HTTP 202 for '%s' on attempt %s", query, attempt + 1)
+            logger.info("DuckDuckGo API returned HTTP 202 for '%s' on attempt %s", query, attempt + 1)
             time.sleep(0.6 * (attempt + 1))
 
         if resp is None:
@@ -244,8 +315,8 @@ def _fallback_duckduckgo_search(query: str) -> dict:
                 "results": [],
                 "source": "DuckDuckGo",
                 "count": 0,
-                "message": f"Search provider temporarily unavailable (HTTP {resp.status_code}). Continue with available market data and ticker news.",
-                "warning": f"DuckDuckGo fallback HTTP {resp.status_code}",
+                "message": f"Search provider temporarily unavailable (HTTP {resp.status_code}).",
+                "warning": f"DuckDuckGo API HTTP {resp.status_code}",
             }
 
         data = resp.json()
@@ -271,18 +342,86 @@ def _fallback_duckduckgo_search(query: str) -> dict:
                 })
 
         if not results:
-            logger.info(f"web_search via DuckDuckGo fallback: no results for '{query}'")
+            logger.info("web_search via DuckDuckGo API fallback: no results for '%s'", query)
             return {
                 "query": query,
-                "message": "No instant results found. Try a more specific query or use get_news for ticker-specific news.",
+                "message": "No instant results found.",
                 "results": [],
                 "source": "DuckDuckGo",
-                "count": 0
+                "count": 0,
             }
 
-        logger.info(f"web_search via DuckDuckGo fallback: {len(results)} results for '{query}'")
+        logger.info("web_search via DuckDuckGo API fallback: %s results for '%s'", len(results), query)
         return {"query": query, "results": results, "source": "DuckDuckGo", "count": len(results)}
 
     except Exception as e:
-        logger.error(f"DuckDuckGo fallback error: {e}")
+        logger.error("DuckDuckGo fallback error: %s", e)
         return {"error": str(e), "query": query, "results": []}
+
+
+def _scrape_duckduckgo_html(query: str) -> list:
+    """Scrape DuckDuckGo HTML search results for actual web results.
+
+    Returns a list of dicts with title, snippet, url keys.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        logger.warning("BeautifulSoup not available for DuckDuckGo HTML scraping")
+        return []
+
+    try:
+        resp = requests.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.warning("DuckDuckGo HTML search HTTP %s for '%s'", resp.status_code, query)
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        results = []
+
+        for result in soup.select(".result"):
+            link_el = result.select_one(".result__a")
+            snippet_el = result.select_one(".result__snippet")
+
+            if not link_el:
+                continue
+
+            url = link_el.get("href", "")
+            # DDG wraps URLs: extract from redirect
+            if url.startswith("//"):
+                url = "https:" + url
+            import re as _re
+            m = _re.search(r'uddg=([^&]+)', str(url))
+            if m:
+                from urllib.parse import unquote
+                url = unquote(m.group(1))
+
+            title = link_el.get_text(strip=True)
+            snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+
+            if url and title:
+                results.append({
+                    "title": title[:180],
+                    "snippet": snippet[:300],
+                    "url": url,
+                    "source": "DuckDuckGo",
+                })
+
+        return results
+
+    except Exception as e:
+        logger.error("DuckDuckGo HTML scrape error: %s", e)
+        return []

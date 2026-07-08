@@ -427,11 +427,14 @@ def validate_strategy_code_payload(code: str, class_name: str):
 
 from contextlib import asynccontextmanager
 
+SIGNAL_WATCHES_ENABLED = False
+
 @asynccontextmanager
 async def lifespan(app):
     if not scheduler.running:
         scheduler.start()
-    scheduler.add_job(check_signal_watches, trigger=IntervalTrigger(minutes=1), id="signal_watch_monitor", replace_existing=True, max_instances=1, coalesce=True)
+    if SIGNAL_WATCHES_ENABLED:
+        scheduler.add_job(check_signal_watches, trigger=IntervalTrigger(minutes=1), id="signal_watch_monitor", replace_existing=True, max_instances=1, coalesce=True)
     try:
         yield
     finally:
@@ -688,6 +691,19 @@ class TradingSignalRequest(BaseModel):
     tickers: List[str]
     period: Optional[str] = "3mo"
     interval: Optional[str] = "1d"
+
+
+class ExpectedPatternScenarioRequest(BaseModel):
+    mode: str = "calculation"  # calculation | llm | hybrid
+    interval: str = "1d"
+    horizon: int = 20
+    lookback: int = 180
+    extended_hours: bool = False
+    api_key: Optional[str] = None
+    provider_config: Optional[Dict[str, Any]] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    include_analysis: bool = True
 
 class SignalWatchRequest(BaseModel):
     tickers: List[str]
@@ -3353,6 +3369,7 @@ def _sanitize_assistant_response(text: str) -> str:
         "read_candles": "candle data",
         "get_chart_data tool": "chart data",
         "get_chart_data": "chart data",
+        "generate_expected_pattern": "expected-pattern forecast",
     }
     cleaned = text
     for raw, replacement in replacements.items():
@@ -3375,6 +3392,7 @@ def _public_tool_label(tool_name: str) -> str:
         "read_candles": "candle data",
         "get_chart_data": "chart data",
         "get_price_chart": "price chart",
+        "generate_expected_pattern": "expected pattern",
         "generate_strategy": "strategy generation",
         "run_backtest": "backtest",
         "download_market_data": "data download",
@@ -5484,6 +5502,7 @@ async def ai_refine_proposal(session_id: str, body: Dict):
 async def research_public_strategy_ideas(task_id: str, request: AIStrategyRequest):
     """Collect bounded, untrusted public research for Web Research generation mode."""
     from modules.web_news_tools import fetch_website as _fetch_website
+    from modules.web_news_tools import fetch_pdf_text as _fetch_pdf_text
     from modules.web_news_tools import web_search as _web_search
 
     raw_objective = str(request.prompt or "").split("Target Dataset Characteristics:", 1)[0]
@@ -5524,24 +5543,108 @@ async def research_public_strategy_ideas(task_id: str, request: AIStrategyReques
         queries.extend([
             f'"{target}" {objective} algorithmic trading strategy explicit entry exit rules{site_filter}',
             f'"{target}" {objective} RSI moving average breakout mean reversion backtest risk management{site_filter}',
+            f'{target} trading strategy backtest entry exit signals{site_filter}',
+            f'{objective} {target} technical analysis strategy{site_filter}',
         ])
     if "papers" in requested_types:
         paper_filter = " OR ".join(f"site:{domain}" for domain in paper_domains[:4])
-        queries.append(f'"{target}" {objective} quantitative trading strategy empirical backtest ({paper_filter})')
-    update_task_state(task_id, progress=22, current="Researching public strategy ideas...")
+        queries.extend([
+            f'"{target}" {objective} quantitative trading strategy empirical backtest ({paper_filter})',
+            f'{target} trading strategy return volatility sharpe ratio ({paper_filter})',
+        ])
+
+    def searxng_is_reachable():
+        try:
+            base_url = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+            return requests.get(f"{base_url}/healthz", timeout=2).status_code == 200
+        except Exception:
+            return False
+
+    def search_arxiv_papers():
+        if "papers" not in requested_types:
+            return {"results": [], "source": "arXiv", "count": 0}
+        try:
+            import xml.etree.ElementTree as ET
+            paper_stopwords = {
+                "strategy", "strategies", "trading", "trade", "clear", "entry", "exit", "rules",
+                "with", "and", "the", "for", "from", "find", "research", "public", "web",
+                "algorithmic", "backtest", "backtesting", "risk", "management",
+            }
+            paper_keywords = [
+                token for token in re.findall(r"[a-z0-9]+", objective.lower())
+                if len(token) > 2 and token not in paper_stopwords
+            ][:6]
+            paper_topic = " ".join(paper_keywords) or "quantitative finance"
+            namespace = {"atom": "http://www.w3.org/2005/Atom"}
+            results = []
+            seen_papers = set()
+            # Progressively broaden narrow objectives instead of treating the first empty query as final.
+            arxiv_queries = [
+                f'all:"{paper_topic}" AND (all:trading OR all:finance OR all:market)',
+                f'(all:{target} OR all:"{paper_topic}") AND cat:q-fin.TR',
+                'cat:q-fin.TR AND (all:strategy OR all:signal OR all:backtest)',
+            ]
+            for search_query in arxiv_queries:
+                response = requests.get(
+                    "https://export.arxiv.org/api/query",
+                    params={
+                        "search_query": search_query,
+                        "start": 0,
+                        "max_results": min(max_sources, 6),
+                        "sortBy": "relevance",
+                    },
+                    headers={"User-Agent": "TradingSpy/1.0 (public research mode)"},
+                    timeout=20,
+                )
+                response.raise_for_status()
+                root = ET.fromstring(response.text)
+                for entry in root.findall("atom:entry", namespace):
+                    title = " ".join((entry.findtext("atom:title", default="", namespaces=namespace) or "").split())
+                    summary = " ".join((entry.findtext("atom:summary", default="", namespaces=namespace) or "").split())
+                    url = (entry.findtext("atom:id", default="", namespaces=namespace) or "").strip()
+                    if title and url and url not in seen_papers:
+                        seen_papers.add(url)
+                        results.append({"title": title, "snippet": summary[:500], "url": url, "source": "arXiv"})
+                if results:
+                    break
+            return {"results": results, "source": "arXiv", "count": len(results)}
+        except Exception as exc:
+            logger.warning("Direct arXiv strategy search failed task_id=%s error=%s", task_id, exc)
+            return {"results": [], "source": "arXiv", "count": 0, "warning": str(exc)}
+    searxng_reachable = await asyncio.to_thread(searxng_is_reachable)
+    if not searxng_reachable:
+        fallback_queries = []
+        if "web" in requested_types:
+            fallback_queries.append(f'{objective} trading strategy entry exit rules')
+        queries = fallback_queries
+
+    research_status = "Researching public strategy ideas..." if searxng_reachable else "SearXNG unavailable; trying DuckDuckGo and arXiv..."
+    update_task_state(task_id, progress=22, current=research_status)
     emit_task_event(
         task_id,
         "progress",
         progress=22,
-        current="Researching public strategy ideas...",
+        current=research_status,
         label="Searching public sources",
-        detail=queries[0],
+        detail=queries[0] if queries else "Searching research papers directly",
     )
 
-    search_payloads = await asyncio.gather(*[
-        asyncio.wait_for(asyncio.to_thread(_web_search.func, query), timeout=25)
-        for query in queries
-    ], return_exceptions=True)
+    if searxng_reachable:
+        search_jobs = [
+            asyncio.wait_for(asyncio.to_thread(_web_search.func, query), timeout=25)
+            for query in queries
+        ]
+        if "papers" in requested_types:
+            search_jobs.append(asyncio.wait_for(asyncio.to_thread(search_arxiv_papers), timeout=25))
+        search_payloads = await asyncio.gather(*search_jobs, return_exceptions=True)
+    else:
+        fallback_jobs = [
+            asyncio.wait_for(asyncio.to_thread(_web_search.func, query), timeout=25)
+            for query in queries
+        ]
+        if "papers" in requested_types:
+            fallback_jobs.append(asyncio.wait_for(asyncio.to_thread(search_arxiv_papers), timeout=25))
+        search_payloads = await asyncio.gather(*fallback_jobs, return_exceptions=True)
     ensure_strategy_generation_active(task_id)
 
     relevance_terms = (
@@ -5593,8 +5696,60 @@ async def research_public_strategy_ideas(task_id: str, request: AIStrategyReques
     candidates.sort(key=lambda item: item["relevance_score"], reverse=True)
     sources = candidates[:max_sources]
 
+    has_include_domains = bool(include_domains)
+
     if not sources:
-        raise RuntimeError("Web Research could not find usable public strategy sources. Check the search service or try a more specific objective.")
+        if has_include_domains:
+            logger.warning(
+                "Strategy web research found no sources with include_domains=%s, retrying without domain filter task_id=%s",
+                include_domains, task_id,
+            )
+            saved_include = request.research_include_domains
+            request.research_include_domains = None
+            try:
+                return await research_public_strategy_ideas(task_id, request)
+            finally:
+                request.research_include_domains = saved_include
+
+        provider_notes = [
+            str((payload or {}).get("warning") or (payload or {}).get("message") or "")
+            for payload in search_payloads
+            if isinstance(payload, dict)
+        ]
+        logger.warning(
+            "Strategy web research found no matching sources task_id=%s provider_notes=%s",
+            task_id,
+            [note for note in provider_notes if note][:4],
+        )
+        warning = (
+            "Public search providers returned no usable sources. Continuing with an original "
+            "model synthesis without public research or citations. Start SearXNG or loosen the "
+            "source filters to enable sourced research."
+        )
+        logger.warning("%s task_id=%s", warning, task_id)
+        update_task_state(
+            task_id,
+            progress=45,
+            current="No public sources available; continuing without citations...",
+            market_analysis=warning,
+            research_sources=[],
+            research_warning=warning,
+        )
+        emit_task_event(
+            task_id,
+            "analysis",
+            progress=45,
+            current="No public sources available; continuing without citations...",
+            market_analysis=warning,
+            research_sources=[],
+            research_warning=warning,
+        )
+        return (
+            "PUBLIC RESEARCH UNAVAILABLE. No source material or performance claims may be cited. "
+            "Create an original, conservative strategy from general technical-analysis principles "
+            "and ensure every rule is explicit and backtestable.",
+            [],
+        )
 
     update_task_state(task_id, progress=35, current="Reading selected public sources...")
     emit_task_event(
@@ -5607,25 +5762,105 @@ async def research_public_strategy_ideas(task_id: str, request: AIStrategyReques
     )
 
     fetched = await asyncio.gather(*[
-        asyncio.wait_for(asyncio.to_thread(_fetch_website.func, source["url"]), timeout=25)
+        asyncio.wait_for(asyncio.to_thread(_fetch_website.func, source["url"], 3000), timeout=25)
         for source in sources[:read_pages]
     ], return_exceptions=True)
     ensure_strategy_generation_active(task_id)
+
+    evidence_groups = {
+        "entry": ("entry", "enter", "buy when", "sell when", "signal", "trigger", "threshold"),
+        "exit": ("exit", "close position", "take profit", "stop loss", "holding period"),
+        "indicators": ("moving average", "sma", "ema", "rsi", "breakout", "momentum", "volatility"),
+        "risk": ("risk", "position size", "drawdown", "volatility", "stop loss"),
+        "validation": ("backtest", "walk-forward", "out-of-sample", "sharpe", "transaction cost"),
+    }
+
+    def evidence_coverage(text):
+        lowered = str(text or "").lower()
+        return [name for name, terms in evidence_groups.items() if any(term in lowered for term in terms)]
+
+    def evidence_excerpt(text, limit=6000):
+        normalized = " ".join(str(text or "").split())
+        sentences = re.split(r"(?<=[.!?])\s+", normalized)
+        scored = []
+        all_terms = tuple(term for terms in evidence_groups.values() for term in terms)
+        for position, sentence in enumerate(sentences):
+            lowered = sentence.lower()
+            score = sum(1 for term in all_terms if term in lowered)
+            if score:
+                scored.append((score, -position, sentence))
+        selected = [sentence for _, _, sentence in sorted(scored, reverse=True)]
+        if not selected:
+            return normalized[:limit]
+        excerpt = " ".join(selected)
+        return excerpt[:limit]
+
+    def arxiv_pdf_url(url):
+        match = re.search(r"arxiv\.org/abs/([^?#]+)", str(url or ""))
+        return f"https://arxiv.org/pdf/{match.group(1)}" if match else None
+
     for source, page in zip(sources[:read_pages], fetched):
         if isinstance(page, Exception):
             source["read_error"] = str(page)
             continue
-        content = " ".join(str((page or {}).get("content") or "").split())[:1600]
+        content = " ".join(str((page or {}).get("content") or "").split())
         if (page or {}).get("status") == "success" and len(content) >= 200 and relevance_score(content) >= 1:
-            source["excerpt"] = content
+            source["excerpt"] = evidence_excerpt(content)
             source["read_status"] = "page_read"
+            source["chars_read"] = len(content)
+            source["evidence_coverage"] = evidence_coverage(content)
         else:
             source["read_error"] = str((page or {}).get("error") or "Fetched page did not contain relevant strategy text")
 
-    pages_read = sum(1 for source in sources if source.get("read_status") == "page_read")
+    # Adaptive second pass: deepen only sources whose skim lacks concrete strategy evidence.
+    deepen_sources = [
+        source for source in sources[:read_pages]
+        if (
+            source.get("read_status") == "page_read"
+            or (source.get("source_type") == "paper" and arxiv_pdf_url(source.get("url")))
+        ) and len(source.get("evidence_coverage") or []) < 3
+    ]
+    if deepen_sources:
+        update_task_state(task_id, progress=39, current="Deep-reading promising research sources...")
+        emit_task_event(
+            task_id, "progress", progress=39,
+            current="Deep-reading promising research sources...",
+            label="Following the evidence",
+            detail=f"Expanding {len(deepen_sources)} source(s) that need more entry, exit, risk, or validation detail",
+        )
+
+        async def deepen(source):
+            pdf_url = arxiv_pdf_url(source["url"]) if source.get("source_type") == "paper" else None
+            if pdf_url:
+                result = await asyncio.to_thread(_fetch_pdf_text.func, pdf_url, 12000)
+                return source, result, "pdf_read"
+            result = await asyncio.to_thread(_fetch_website.func, source["url"], 12000)
+            return source, result, "deep_read"
+
+        deep_results = await asyncio.gather(*[
+            asyncio.wait_for(deepen(source), timeout=35) for source in deepen_sources
+        ], return_exceptions=True)
+        ensure_strategy_generation_active(task_id)
+        for result in deep_results:
+            if isinstance(result, Exception):
+                logger.warning("Adaptive research deep read failed task_id=%s error=%s", task_id, result)
+                continue
+            source, page, status = result
+            content = " ".join(str((page or {}).get("content") or "").split())
+            coverage = evidence_coverage(content)
+            if (page or {}).get("status") == "success" and len(content) >= 500 and len(coverage) >= len(source.get("evidence_coverage") or []):
+                source["excerpt"] = evidence_excerpt(content)
+                source["read_status"] = status
+                source["chars_read"] = len(content)
+                source["evidence_coverage"] = coverage
+                source["deep_read_reason"] = "The initial skim lacked enough concrete entry, exit, risk, or validation detail."
+
+    read_statuses = {"page_read", "deep_read", "pdf_read"}
+    pages_read = sum(1 for source in sources if source.get("read_status") in read_statuses)
     if pages_read == 0:
-        raise RuntimeError(
-            "Web Research found search results but could not read a relevant strategy page. Try a more specific theme or check outbound website access."
+        logger.warning(
+            "Strategy web research could not read any pages, using snippets as evidence task_id=%s",
+            task_id,
         )
     logger.info(
         "Strategy web research completed task_id=%s sources=%s pages_read=%s snippet_only=%s",
@@ -5646,7 +5881,7 @@ async def research_public_strategy_ideas(task_id: str, request: AIStrategyReques
         )
     context = "\n".join(research_lines)
     public_summary = "\n".join(
-        f'- [{"PAGE READ" if source.get("read_status") == "page_read" else "SNIPPET ONLY"}] {source["title"]} — {source["source"]}'
+        f'- [{source.get("read_status", "snippet_only").replace("_", " ").upper()}] {source["title"]} — {source["source"]}'
         for source in sources
     )
     update_task_state(
@@ -7678,6 +7913,186 @@ async def get_technicals(ticker: str, period: str = "3mo"):
     """Get technical indicators for a ticker"""
     return market_intel.get_ticker_technicals(ticker, period)
 
+
+@app.get("/api/intelligence/expected-pattern/{ticker}")
+async def get_expected_pattern(
+    ticker: str,
+    interval: str = "1d",
+    horizon: int = 20,
+    lookback: int = 180,
+    extended_hours: bool = False,
+):
+    """Expose the Assistant's expected-pattern calculation to Trading Signal."""
+    from modules.expected_pattern import generate_expected_pattern
+
+    result = await asyncio.to_thread(
+        generate_expected_pattern.invoke,
+        {
+            "ticker": ticker,
+            "interval": interval,
+            "horizon": max(2, min(int(horizon or 20), 250)),
+            "lookback": max(40, min(int(lookback or 180), 500)),
+            "extended_hours": bool(extended_hours),
+        },
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=422, detail=result["error"])
+    return result
+
+
+@app.post("/api/intelligence/expected-pattern/{ticker}/scenario")
+async def get_expected_pattern_scenario(ticker: str, request: ExpectedPatternScenarioRequest):
+    """Create calculation, LLM, or constrained hybrid expected-pattern paths."""
+    from modules.expected_pattern import generate_expected_pattern
+
+    mode = str(request.mode or "calculation").strip().lower()
+    if mode not in {"calculation", "llm", "hybrid"}:
+        raise HTTPException(status_code=400, detail="mode must be calculation, llm, or hybrid")
+    horizon_limit = 250 if mode == "calculation" else 120
+    horizon = max(2, min(int(request.horizon or 20), horizon_limit))
+    baseline = await asyncio.to_thread(
+        generate_expected_pattern.invoke,
+        {
+            "ticker": ticker,
+            "interval": request.interval,
+            "horizon": horizon,
+            "lookback": max(40, min(int(request.lookback or 180), 500)),
+            "extended_hours": bool(request.extended_hours),
+        },
+    )
+    if baseline.get("error"):
+        raise HTTPException(status_code=422, detail={
+            "code": "market_data_unavailable",
+            "message": str(baseline["error"]),
+            "action": "Try another ticker/interval, shorten the lookback, or retry when market data is available.",
+            "retryable": True,
+        })
+    baseline["scenario_mode"] = "calculation"
+    baseline["scenario_label"] = "Calculation"
+    if mode == "calculation":
+        return baseline
+
+    compact_history = [
+        {
+            "time": row.get("time"),
+            "close": row.get("close"),
+            "volume": row.get("volume"),
+        }
+        for row in (baseline.get("history") or [])[-60:]
+    ]
+    analysis_requirement = (
+        "Include rationale (maximum 80 words), regime, and invalidation as concise user-facing analysis."
+        if request.include_analysis else
+        "Set rationale, regime, and invalidation to empty strings; return only the path data."
+    )
+    system_prompt = f"""You produce a bounded market scenario from supplied historical facts.
+Return JSON only with keys cumulative_returns_pct (one cumulative percentage for every requested future bar), rationale, regime, and invalidation.
+{analysis_requirement}
+Do not claim certainty, use outside/current information, invent news, or output prices. Make the path gradual and internally consistent. This is scenario construction, not financial advice."""
+    user_payload = {
+        "symbol": baseline.get("symbol"),
+        "interval": baseline.get("interval"),
+        "horizon": horizon,
+        "indicators": baseline.get("inputs"),
+        "calculation_direction": baseline.get("direction"),
+        "calculation_end_return_pct": baseline.get("expected_end_return_pct"),
+        "recent_bars": compact_history,
+    }
+    try:
+        raw = await call_llm(
+            provider=request.provider,
+            model=request.model,
+            api_key=request.api_key,
+            provider_config=request.provider_config,
+            system_prompt=system_prompt,
+            user_prompt=json.dumps(user_payload, default=str),
+            json_mode=True,
+            max_tokens=1800,
+        )
+        parsed = parse_llm_json_object(raw)
+        returns = parsed.get("cumulative_returns_pct") or []
+        if len(returns) != horizon:
+            raise ValueError(f"Model returned {len(returns)} points; expected {horizon}")
+        returns = [float(value) for value in returns]
+        if not all(math.isfinite(value) for value in returns):
+            raise ValueError("Model returned non-finite values")
+    except Exception as exc:
+        logger.warning("LLM expected-pattern scenario failed ticker=%s mode=%s error=%s", ticker, mode, exc)
+        error_text = str(exc)
+        lowered = error_text.lower()
+        provider_label = normalize_provider_for_model(request.provider, request.model)
+        if any(term in lowered for term in ("rate limit", "rate_limit", "429", "quota", "too many requests")):
+            detail = {
+                "code": "provider_rate_limit",
+                "message": f"{provider_label} rate limit or quota was reached.",
+                "action": "Wait and retry, choose another configured model, shorten the horizon, or use Calculation mode without an LLM call.",
+                "retryable": True,
+            }
+        elif any(term in lowered for term in ("api key", "unauthorized", "401", "403", "authentication")):
+            detail = {
+                "code": "provider_auth",
+                "message": f"{provider_label} authentication failed or no usable API key was configured.",
+                "action": "Check Assistant API settings or use Calculation mode.",
+                "retryable": False,
+            }
+        elif any(term in lowered for term in ("timed out", "timeout", "connection", "temporarily unavailable")):
+            detail = {
+                "code": "provider_unavailable",
+                "message": f"{provider_label} did not respond in time.",
+                "action": "Retry, choose another model, or use Calculation mode.",
+                "retryable": True,
+            }
+        elif "points; expected" in lowered or "non-finite" in lowered or "json" in lowered:
+            detail = {
+                "code": "invalid_model_path",
+                "message": f"{provider_label} returned an invalid forecast path: {error_text[:180]}",
+                "action": "Retry with a stronger model, reduce the horizon, or use Hybrid/Calculation mode.",
+                "retryable": True,
+            }
+        else:
+            detail = {
+                "code": "ai_scenario_failed",
+                "message": f"{provider_label} could not generate the scenario.",
+                "action": "Retry, inspect backend logs, choose another model, or use Calculation mode.",
+                "retryable": True,
+            }
+        detail["provider"] = provider_label
+        detail["model"] = request.model
+        raise HTTPException(status_code=422, detail=detail)
+
+    anchor = float((baseline.get("inputs") or {}).get("latest_close") or 0)
+    per_bar_volatility = float((baseline.get("inputs") or {}).get("per_bar_volatility_pct") or 0)
+    max_total_move = max(3.0, per_bar_volatility * math.sqrt(horizon) * 3.5)
+    returns = [max(-max_total_move, min(max_total_move, value)) for value in returns]
+    ai_prices = [anchor * (1 + value / 100) for value in returns]
+    calculation_forecast = baseline.get("forecast") or []
+    for index, row in enumerate(calculation_forecast):
+        calculation_close = float(row["expected_close"])
+        ai_close = ai_prices[index]
+        selected_close = ai_close if mode == "llm" else (0.70 * calculation_close + 0.30 * ai_close)
+        row["calculation_close"] = round(calculation_close, 4)
+        row["llm_close"] = round(ai_close, 4)
+        row["expected_close"] = round(selected_close, 4)
+        row["expected_return_pct"] = round((selected_close / anchor - 1) * 100, 3)
+
+    end_return = float(calculation_forecast[-1]["expected_return_pct"])
+    neutral_threshold = max(0.35, per_bar_volatility * math.sqrt(horizon) * 0.2)
+    baseline["expected_end_return_pct"] = round(end_return, 3)
+    baseline["direction"] = "upward" if end_return > neutral_threshold else "downward" if end_return < -neutral_threshold else "sideways"
+    baseline["scenario_mode"] = mode
+    baseline["scenario_label"] = "LLM scenario" if mode == "llm" else "Hybrid 70% calculation / 30% LLM"
+    baseline["llm_provider"] = normalize_provider_for_model(request.provider, request.model)
+    baseline["llm_model"] = request.model
+    baseline["llm_rationale"] = str(parsed.get("rationale") or "")[:600] if request.include_analysis else ""
+    baseline["llm_regime"] = str(parsed.get("regime") or "")[:120] if request.include_analysis else ""
+    baseline["llm_invalidation"] = str(parsed.get("invalidation") or "")[:300] if request.include_analysis else ""
+    baseline["warning"] = (
+        "AI-authored scenario constrained by recent-bar volatility; it is not a statistically validated forecast."
+        if mode == "llm" else
+        "Hybrid scenario blends a quantitative path with a constrained AI interpretation; the uncertainty band remains calculation-based."
+    )
+    return baseline
+
 @app.get("/api/intelligence/earnings/{ticker}")
 async def get_earnings(ticker: str):
     """Get earnings calendar for a ticker"""
@@ -8356,6 +8771,8 @@ async def list_signal_watches():
 
 @app.post("/api/intelligence/signal-watches")
 async def create_signal_watch(request: SignalWatchRequest):
+    if not SIGNAL_WATCHES_ENABLED:
+        raise HTTPException(status_code=410, detail="Signal Watches are disabled")
     record = _clean_signal_watch(request)
     record.update({"id": str(uuid.uuid4()), "user_id": LOCAL_USER_ID, "created_at": datetime.now().isoformat(), "checked_at": None, "last_status": "Waiting for first check", "ticker_state": {}})
     signal_watches_table.insert(record)
@@ -8363,6 +8780,8 @@ async def create_signal_watch(request: SignalWatchRequest):
 
 @app.patch("/api/intelligence/signal-watches/{watch_id}")
 async def update_signal_watch(watch_id: str, request: SignalWatchUpdateRequest):
+    if not SIGNAL_WATCHES_ENABLED:
+        raise HTTPException(status_code=410, detail="Signal Watches are disabled")
     existing = signal_watches_table.get((Query().id == watch_id) & (Query().user_id == LOCAL_USER_ID))
     if not existing:
         raise HTTPException(status_code=404, detail="Signal watch not found")
@@ -9395,6 +9814,34 @@ async def web_search_endpoint(q: str):
     return _web_search.func(q)
 
 
+@app.get("/api/intelligence/search-health")
+async def search_health_endpoint():
+    """Report whether the preferred SearXNG service is reachable without running a search."""
+    searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+
+    def check_searxng():
+        try:
+            response = requests.get(f"{searxng_url}/healthz", timeout=3)
+            return response.status_code == 200, response.status_code, None
+        except Exception as exc:
+            return False, None, str(exc)
+
+    reachable, status_code, error = await asyncio.to_thread(check_searxng)
+    return {
+        "searxng_reachable": reachable,
+        "searxng_url": searxng_url,
+        "status_code": status_code,
+        "error": error,
+        "fallback": "DuckDuckGo",
+        "fallback_guaranteed": False,
+        "message": (
+            "SearXNG is ready."
+            if reachable
+            else "SearXNG is unavailable. DuckDuckGo fallback will be attempted but may return no results."
+        ),
+    }
+
+
 @app.get("/api/intelligence/fetch-website")
 async def fetch_website_endpoint(url: str):
     """Fetch and extract text content from a URL."""
@@ -9773,6 +10220,7 @@ UNIFIED ASSISTANT CONFIG:
 - For improvement requests, treat the optimizer as an iterative workflow: baseline current version, create or start improvements, backtest each candidate, keep only versions that beat the last accepted version or buy-and-hold benchmark, and ask before continuing if the user did not explicitly request an open-ended/infinite loop.
 - If the user asks for "infinite loop" optimization, explain the stop controls and use sensible checkpoints: report each accepted improvement, no-improvement streak, benchmark comparison, and ask whether to continue when a configured round limit or stagnation threshold is reached.
 - If the user asks what APIs/tools are available or how the assistant is configured, explain the active provider/model and available tool categories.
+- For an expected pattern, future/projected trend, forecast chart, or forecast CSV, use the expected-pattern calculation. Explain that its central path and 80% band are statistical scenarios from recent OHLCV bars, not guaranteed predictions.
 """
             
             # Add thinking detail instructions based on user preference
@@ -9902,6 +10350,34 @@ UNIFIED ASSISTANT CONFIG:
             triggered_tasks = []
 
             tool_calls = list(getattr(response, "tool_calls", []) or [])
+            forecast_terms = (
+                "expected pattern", "projected trend", "forecast path", "forecast chart",
+                "price forecast", "future trend", "upcoming trend", "expected trend", "likely pattern",
+                "price prediction", "predict the price",
+            )
+            is_expected_pattern_request = any(term in simple_message for term in forecast_terms)
+            if is_expected_pattern_request:
+                existing_tool_names = {_normalize_agent_tool_name(tc.get("name")) for tc in tool_calls if isinstance(tc, dict)}
+                if "generate_expected_pattern" not in existing_tool_names:
+                    raw_message = str(request.message or "")
+                    symbol_match = re.search(r"\$([A-Za-z][A-Za-z0-9.-]{0,9})\b", raw_message)
+                    if not symbol_match:
+                        symbol_match = re.search(r"\b([A-Z]{2,6}(?:-USD|=X)?)\b", raw_message)
+                    known_symbols = ("spy", "qqq", "iwm", "dia", "nvda", "tsla", "aapl", "msft", "amzn", "meta", "googl", "amd", "btc-usd")
+                    symbol = symbol_match.group(1).upper() if symbol_match else next((value.upper() for value in known_symbols if re.search(rf"\b{re.escape(value)}\b", simple_message)), None)
+                    if symbol:
+                        interval_match = re.search(r"\b(1m|2m|5m|15m|30m|60m|90m|1h|1d|1wk|1mo)\b", simple_message)
+                        horizon_match = re.search(r"\b(?:next|forecast|project)\s+(\d{1,2})\s+(?:bars?|candles?|days?|hours?)\b", simple_message)
+                        tool_calls.append({
+                            "name": "generate_expected_pattern",
+                            "args": {
+                                "ticker": symbol,
+                                "interval": interval_match.group(1) if interval_match else "1d",
+                                "horizon": min(250, max(2, int(horizon_match.group(1)))) if horizon_match else 20,
+                            },
+                        })
+                        if thinking_detail != "brief":
+                            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Added a recent-bar expected-pattern calculation with an uncertainty range and CSV-ready output...'})}\n\n"
             market_driver_terms = ["why", "explain", "catalyst", "driver", "up", "down", "going up", "going down", "rally", "selloff", "drop", "today"]
             market_scope_terms = ["market", "stocks", "s&p", "sp500", "nasdaq", "dow", "heatmap", "mover", "movers", "movement", "sector", "industry"]
             is_market_driver_question = (

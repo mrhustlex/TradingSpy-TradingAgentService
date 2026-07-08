@@ -29,7 +29,7 @@ import {
   Plus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { BACKTEST_SERVICE, DATA_SERVICE } from '../config';
+import { API_BASE, BACKTEST_SERVICE, DATA_SERVICE } from '../config';
 import { getApiSettings } from '../utils/apiKeyHelper';
 import { formatDatasetName } from '../utils/formatters';
 import useGenerationStream from '../hooks/useGenerationStream';
@@ -60,6 +60,8 @@ const AIStrategyStudio = ({ onTrigger, onRefreshStrats, tasks, notify, files, st
     const [researchReadPages, setResearchReadPages] = useState(4);
     const [researchIncludeDomains, setResearchIncludeDomains] = useState('');
     const [researchExcludeDomains, setResearchExcludeDomains] = useState('');
+    const [searchHealth, setSearchHealth] = useState(null);
+    const [checkingSearchHealth, setCheckingSearchHealth] = useState(false);
     
     // Forge State
     const [marketAnalysis, setMarketAnalysis] = useState('');
@@ -142,6 +144,25 @@ const AIStrategyStudio = ({ onTrigger, onRefreshStrats, tasks, notify, files, st
     };
 
     const renderMarkdown = renderReadableMarkdown;
+
+    const checkSearchHealth = async () => {
+        setCheckingSearchHealth(true);
+        try {
+            const res = await axios.get(`${API_BASE}/intelligence/search-health`);
+            setSearchHealth(res.data);
+        } catch (e) {
+            setSearchHealth({
+                searxng_reachable: false,
+                message: 'Could not check the search service. Web Research may rely on a best-effort fallback.',
+            });
+        } finally {
+            setCheckingSearchHealth(false);
+        }
+    };
+
+    useEffect(() => {
+        if (mode === 'web_research') checkSearchHealth();
+    }, [mode]);
 
     // Auto-fetch metadata for selected file
     useEffect(() => {
@@ -337,6 +358,7 @@ Please optimize the strategy logic specifically for this dataset's characteristi
     const availableBars = Number(datasetMeta?.total_bars ?? datasetMeta?.rows ?? 0);
     const maxLookback = availableBars >= 20 ? Math.min(500, availableBars) : 20;
     const forgeComplete = mode !== 'upload' && progress === 100 && generatedStrats.length > 0 && !activeTaskId && !generationError;
+    const isResearchFailure = /web research|search service|usable sources|searxng/i.test(generationError);
 
     const cancelForge = async () => {
         if (!activeTaskId || isCancelling) return;
@@ -829,6 +851,20 @@ Please optimize the strategy logic specifically for this dataset's characteristi
 
                                 {mode === 'web_research' && (
                                     <div style={{ display: 'grid', gap: '0.85rem', marginBottom: '1rem' }}>
+                                        {searchHealth && !searchHealth.searxng_reachable && (
+                                            <div style={{ padding: '0.85rem', borderRadius: '8px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                                                <div style={{ fontWeight: 800, color: 'var(--brand-yellow)', marginBottom: '0.35rem' }}>SearXNG is not available</div>
+                                                <div style={{ fontSize: '0.78rem', lineHeight: 1.5, opacity: 0.8 }}>
+                                                    {searchHealth.message} The bundled option is <code>docker compose up -d searxng</code>, but SearXNG may also run separately; set <code>SEARXNG_URL</code> in <code>backend/.env</code>.
+                                                </div>
+                                                <button className="btn btn-sm btn-ghost" onClick={checkSearchHealth} disabled={checkingSearchHealth} style={{ marginTop: '0.55rem' }}>
+                                                    {checkingSearchHealth ? <RefreshCw size={13} className="animate-spin" /> : <RefreshCw size={13} />} Check Again
+                                                </button>
+                                            </div>
+                                        )}
+                                        {searchHealth?.searxng_reachable && (
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--brand-green)' }}>✓ SearXNG search service is ready.</div>
+                                        )}
                                         <div className="form-group">
                                             <label>Source Types</label>
                                             <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
@@ -977,7 +1013,9 @@ Please optimize the strategy logic specifically for this dataset's characteristi
                                             </button>
                                         </div>
                                         <div style={{ marginTop: '0.75rem', fontSize: '0.75rem', opacity: 0.55 }}>
-                                            Edit minor mistakes without another model call, generate again with the same settings, or choose a stronger coding model in Setup. New model requests may use additional tokens.
+                                            {isResearchFailure
+                                                ? 'Public search is unavailable. Start SearXNG or loosen the selected source/domain filters; generation can otherwise continue without citations.'
+                                                : 'Edit minor mistakes without another model call, generate again with the same settings, or choose a stronger coding model in Setup. New model requests may use additional tokens.'}
                                         </div>
                                     </div>
                                 ) : forgeComplete ? (
@@ -1157,8 +1195,8 @@ Please optimize the strategy logic specifically for this dataset's characteristi
                                                     key={`${source.url}-${sourceIndex}`}
                                                     style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}
                                                 >
-                                                    <span className={`badge ${source.read_status === 'page_read' ? 'badge-green' : 'badge-ghost'}`} style={{ fontSize: '0.6rem' }}>
-                                                        {source.read_status === 'page_read' ? 'Page read' : 'Snippet only'}
+                                                    <span className={`badge ${['page_read', 'deep_read', 'pdf_read'].includes(source.read_status) ? 'badge-green' : 'badge-ghost'}`} style={{ fontSize: '0.6rem' }}>
+                                                        {{ pdf_read: 'PDF read', deep_read: 'Deep page read', page_read: source.source_type === 'paper' ? 'Abstract read' : 'Page read', snippet_only: 'Snippet only' }[source.read_status] || 'Snippet only'}
                                                     </span>
                                                     <span className="badge badge-blue" style={{ fontSize: '0.6rem' }}>
                                                         {source.source_type === 'paper' ? 'Research paper' : 'Public web'}

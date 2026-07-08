@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from modules.web_news_tools import get_news, web_search, fetch_website
 from modules.orchestration_tools import list_available_strategies, get_strategy_code, list_available_datasets, generate_strategy, run_backtest, download_market_data, check_task_status
 from modules.action_tools import ask_user_for_clarification, get_price_chart
+from modules.expected_pattern import generate_expected_pattern
 try:
     from market_intelligence import market_intel
 except ImportError:
@@ -1884,6 +1885,7 @@ ALL_TOOLS = [
     check_task_status,
     ask_user_for_clarification,
     get_price_chart,
+    generate_expected_pattern,
 ]
 
 SYSTEM_PROMPT = """You are a sharp, trading assistant with real-time market data and backtesting capabilities.
@@ -1900,6 +1902,7 @@ Keep responses concise and natural.
 - **Exception: Only retry if explicitly instructed by the system or if the error is a temporary network issue**
 - **For chart tools: Call get_price_chart once, then provide analysis. Stop after that.**
 - **For short-timeframe candle questions: prefer read_candles(ticker, interval, period, limit). It reads local data or downloads the missing dataset first. Use extended_hours=True when the user asks about premarket/postmarket or extended-session behavior.**
+- **For an expected pattern, projected trend, forecast chart, or forecast CSV: call generate_expected_pattern. Treat the path as a probabilistic scenario and mention its uncertainty band; never call it a guaranteed prediction.**
 - **For data tools: Call once, analyze, respond. Do not call again unless user asks for different data.**
 
 🧠 CONVERSATION AWARENESS:

@@ -181,13 +181,27 @@ Open <http://localhost:5173>.
 
 ### 4. Optional: start local web search
 
-News search uses SearXNG. If Docker is available, run this from the repository root:
+News and Web Research prefer SearXNG. SearXNG is **not Docker-only**: it may run as a native service, on another machine, or from the bundled Compose service. If Docker is available, the easiest repository-supported option is:
 
 ```bash
 docker compose up -d searxng
 ```
 
-The rest of TradingSpy still works when SearXNG is unavailable; web-search tools will report that the search service could not be reached.
+For a separately managed SearXNG instance, configure its base URL in `backend/.env`:
+
+```bash
+SEARXNG_URL=http://localhost:8080
+```
+
+The rest of TradingSpy works when SearXNG is unavailable, but **Web Research** needs a working search provider. The DuckDuckGo fallback may be unavailable or return no results. Direct arXiv search remains available when Research Papers is selected.
+
+Web Research reads adaptively. It first skims each selected page or paper abstract, checks whether it found concrete entry, exit, indicator, risk, and validation evidence, and deep-reads only sources that need more detail. For arXiv papers it can continue into the PDF. Reading is deliberately bounded (up to 12,000 extracted characters and 20 PDF pages per source), and only relevant passages are supplied to the strategy model.
+
+If every public search provider is temporarily unavailable, generation continues without citations instead of failing the job. The Studio labels this fallback clearly; it never invents or implies sources that were not read.
+
+### Expected Pattern forecasts
+
+Ask the Assistant for an expected pattern, projected trend, forecast chart, or forecast CSV for a symbol and timeframe—for example, `Show the expected pattern for QQQ over the next 20 daily bars`. It reads recent OHLCV bars, derives momentum, trend, mean-reversion, RSI, volume, and volatility context, then renders a central path with an 80% uncertainty band. The card includes one-click CSV export. Forecasts are reproducible statistical scenarios based on historical bars, not guaranteed prices or financial advice.
 
 ## Provider Configuration
 
@@ -372,6 +386,16 @@ curl http://localhost:11434/api/tags
 ```
 
 For Docker, keep `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1`. For a backend running directly on the host, use `http://localhost:11434/v1`. If Ollama only listens on loopback inside another machine or container, expose it deliberately and review the security implications first.
+
+### Web Research says no sources were found
+
+Open Web Research and check its search-service status notice. If SearXNG is unavailable, either start the bundled service:
+
+```bash
+docker compose up -d searxng
+```
+
+Or run SearXNG separately and set `SEARXNG_URL` in `backend/.env`. Docker is optional; only a reachable SearXNG HTTP service is required. DuckDuckGo is a best-effort fallback and is not guaranteed to return results.
 
 ### The frontend opens but the API is unavailable
 

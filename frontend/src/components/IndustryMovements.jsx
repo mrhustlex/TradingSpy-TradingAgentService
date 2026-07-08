@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { INTELLIGENCE_SERVICE } from '../config';
+import { getApiSettings } from '../utils/apiKeyHelper';
 import { RefreshCw, TrendingUp, TrendingDown, Search, Newspaper, Filter, Loader2, MessageCircleQuestion, Activity, Save, Trash2, X, Bell, BellRing } from 'lucide-react';
 
 const MAJOR_STOCKS = [
@@ -15,6 +16,8 @@ const MAJOR_STOCKS = [
     'PYPL', 'UBER', 'XYZ', 'SNAP',
     'PG', 'KO', 'PEP', 'PM',
 ];
+
+const SIGNAL_WATCHES_ENABLED = false;
 
 const MOVEMENT_CHUNK_SIZE = 8;
 const MOVEMENT_CHUNK_CONCURRENCY = 3;
@@ -112,7 +115,7 @@ const parseTickers = (value) => [...new Set(String(value || '')
     .filter(Boolean))]
     .slice(0, 120);
 
-const isPrimarySignalTicker = (ticker) => /^[A-Z][A-Z0-9-]{0,5}$/.test(String(ticker || '').toUpperCase());
+const isPrimarySignalTicker = (ticker) => /^[A-Z0-9^][A-Z0-9.^=-]{0,14}$/.test(String(ticker || '').toUpperCase());
 
 const getCurrentSignalToken = (value) => {
     const parts = String(value || '').split(/[\s,]+/);
@@ -151,6 +154,63 @@ const formatSessionLabel = (session) => ({
     overnight: 'prior after-hours start',
 }[session] || '');
 
+const estimateRawBarsUntil = (targetValue, interval) => {
+    const target = new Date(targetValue);
+    const now = new Date();
+    if (Number.isNaN(target.getTime()) || target <= now) return 2;
+    const minutes = { '1m': 1, '2m': 2, '5m': 5, '15m': 15, '30m': 30, '60m': 60, '90m': 90, '1h': 60 }[interval];
+    let bars;
+    if (minutes) bars = Math.ceil((target - now) / 60000 / minutes);
+    else if (interval === '1wk') bars = Math.ceil((target - now) / 604800000);
+    else if (interval === '1mo') bars = Math.ceil((target - now) / 2592000000);
+    else {
+        bars = 0;
+        const cursor = new Date(now);
+        while (cursor < target && bars <= 5000) {
+            cursor.setDate(cursor.getDate() + 1);
+            if (cursor.getDay() !== 0 && cursor.getDay() !== 6) bars += interval === '5d' ? 0.2 : 1;
+        }
+        bars = Math.ceil(bars);
+    }
+    return Math.max(2, bars);
+};
+
+const HORIZON_TIME_RANGES = [
+    { value: '1d', label: '1 Day', intervals: ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h'] },
+    { value: '3d', label: '3 Days', intervals: ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h'] },
+    { value: '1w', label: '1 Week', intervals: ['15m', '30m', '60m', '90m', '1h', '1d'] },
+    { value: '2w', label: '2 Weeks', intervals: ['60m', '90m', '1h', '1d'] },
+    { value: '1mo', label: '1 Month', intervals: ['60m', '90m', '1h', '1d', '1wk'] },
+    { value: '3mo', label: '3 Months', intervals: ['1d', '1wk'] },
+    { value: '6mo', label: '6 Months', intervals: ['1d', '1wk'] },
+];
+
+const estimateBarsForTimeRange = (timeRange, interval) => {
+    const now = new Date();
+    const target = new Date(now);
+    
+    switch (timeRange) {
+        case '1d': target.setDate(now.getDate() + 1); break;
+        case '3d': target.setDate(now.getDate() + 3); break;
+        case '1w': target.setDate(now.getDate() + 7); break;
+        case '2w': target.setDate(now.getDate() + 14); break;
+        case '1mo': target.setMonth(now.getMonth() + 1); break;
+        case '3mo': target.setMonth(now.getMonth() + 3); break;
+        case '6mo': target.setMonth(now.getMonth() + 6); break;
+        default: return 20;
+    }
+    
+    return estimateRawBarsUntil(target.toISOString(), interval);
+};
+const estimateBarsUntil = (targetValue, interval, maximum) => Math.min(maximum, estimateRawBarsUntil(targetValue, interval));
+const expectedPatternErrorMessage = error => {
+    const detail = error?.response?.data?.detail;
+    if (detail && typeof detail === 'object') return `${detail.message || 'Expected pattern failed.'}${detail.action ? ` ${detail.action}` : ''}`;
+    if (typeof detail === 'string') return detail;
+    if (error?.code === 'ECONNABORTED') return 'Expected Pattern timed out. Retry, shorten the horizon, choose another model, or use Calculation mode.';
+    return error?.message || 'Expected pattern could not be calculated. Check market data and model settings, or use Calculation mode.';
+};
+
 const subTabStyle = (active) => ({
     border: '1px solid var(--border)',
     background: active ? 'var(--brand-blue)' : 'var(--bg-accent)',
@@ -184,7 +244,260 @@ const MetricCell = ({ label, value, help }) => (
     </div>
 );
 
-const MoverStockDetail = ({ ticker, mover, onClose, onExplain }) => {
+const SignalExpectedPattern = ({ pattern, loading, error, onRefresh, horizon, setHorizon, interval, setInterval, generationMode, horizonMode, setHorizonMode, targetTime, setTargetTime, timeRange, setTimeRange }) => {
+    const [hoverIndex, setHoverIndex] = useState(null);
+    const [showLevels, setShowLevels] = useState(true);
+    const history = (pattern?.history || []).slice(-60);
+    const forecast = pattern?.forecast || [];
+    const technicalLevels = pattern?.technical_levels || {};
+    const values = [
+        ...history.map(row => Number(row.close)),
+        ...forecast.flatMap(row => [Number(row.lower_80), Number(row.upper_80), Number(row.expected_close)]),
+    ].filter(Number.isFinite);
+    const min = values.length ? Math.min(...values) : 0;
+    const max = values.length ? Math.max(...values) : 1;
+    const range = Math.max(max - min, Math.abs(max || 1) * 0.01);
+    const yMin = min - range * 0.08;
+    const yMax = max + range * 0.08;
+    const width = 900;
+    const height = 330;
+    const padding = { left: 66, right: 25, top: 26, bottom: 48 };
+    const totalPoints = history.length + forecast.length;
+    const x = index => padding.left + (index / Math.max(1, totalPoints - 1)) * (width - padding.left - padding.right);
+    const y = value => padding.top + ((yMax - value) / (yMax - yMin)) * (height - padding.top - padding.bottom);
+    const anchorIndex = Math.max(0, history.length - 1);
+    const anchor = Number(history[anchorIndex]?.close || pattern?.inputs?.latest_close || 0);
+    const historyPath = history.map((row, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(Number(row.close))}`).join(' ');
+    const forecastPath = [{ expected_close: anchor }, ...forecast]
+        .map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.expected_close))}`).join(' ');
+    const calculationPath = forecast.some(row => row.calculation_close != null)
+        ? [{ calculation_close: anchor }, ...forecast].map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.calculation_close))}`).join(' ')
+        : '';
+    const trendPath = trend => {
+        const points = (trend?.points || []).slice(-totalPoints);
+        return points.length === totalPoints
+            ? points.map((point, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(Number(point.price))}`).join(' ')
+            : '';
+    };
+    const supportTrendPath = trendPath(technicalLevels.trend_support);
+    const resistanceTrendPath = trendPath(technicalLevels.trend_resistance);
+    const band = forecast.length ? [
+        `${x(anchorIndex)},${y(anchor)}`,
+        ...forecast.map((row, index) => `${x(history.length + index)},${y(Number(row.upper_80))}`),
+        ...[...forecast].reverse().map((row, reverseIndex) => {
+            const index = forecast.length - 1 - reverseIndex;
+            return `${x(history.length + index)},${y(Number(row.lower_80))}`;
+        }),
+    ].join(' ') : '';
+    const yTicks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) * index / 4));
+    const formatAxisTime = value => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return '';
+        return pattern?.interval?.includes('m') || pattern?.interval?.includes('h')
+            ? date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+            : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    };
+    const endReturn = Number(pattern?.expected_end_return_pct || 0);
+    const horizonLimit = generationMode === 'calculation' ? 250 : 120;
+    const rawTargetBars = horizonMode === 'timestamp' && targetTime 
+        ? estimateRawBarsUntil(targetTime, interval) 
+        : horizonMode === 'time' && timeRange
+        ? estimateBarsForTimeRange(timeRange, interval)
+        : horizon;
+    const horizonWarning = rawTargetBars > horizonLimit
+        ? `Target exceeds the ${horizonLimit}-bar ${generationMode} limit and will be truncated.`
+        : horizon > (generationMode === 'calculation' ? 60 : 40)
+            ? `Long ${horizon}-bar scenarios compound uncertainty; 20 bars is the recommended default.`
+            : '';
+    useEffect(() => {
+        if (horizonMode === 'timestamp' && targetTime) {
+            setHorizon(estimateBarsUntil(targetTime, interval, horizonLimit));
+        } else if (horizonMode === 'time' && timeRange) {
+            const bars = estimateBarsForTimeRange(timeRange, interval);
+            setHorizon(Math.min(bars, horizonLimit));
+        }
+    }, [horizonMode, targetTime, timeRange, interval, horizonLimit, setHorizon]);
+    const hovered = hoverIndex == null ? null : hoverIndex < history.length
+        ? { type: 'actual', time: history[hoverIndex]?.time, price: Number(history[hoverIndex]?.close) }
+        : (() => {
+            const row = forecast[hoverIndex - history.length];
+            return row ? { type: 'forecast', time: row.time, price: Number(row.expected_close), lower: Number(row.lower_80), upper: Number(row.upper_80) } : null;
+        })();
+    const hoverX = hoverIndex == null ? null : x(hoverIndex);
+    const hoverY = hovered ? y(hovered.price) : null;
+    const handleChartHover = event => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (!rect.width || totalPoints < 1) return;
+        const viewX = ((event.clientX - rect.left) / rect.width) * width;
+        const ratio = (viewX - padding.left) / (width - padding.left - padding.right);
+        setHoverIndex(Math.max(0, Math.min(totalPoints - 1, Math.round(ratio * (totalPoints - 1)))));
+    };
+
+    return (
+        <div className="terminal-card" style={{ margin: '0.9rem 1rem 0', padding: '0.95rem', border: '1px solid rgba(96,165,250,0.3)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', flexWrap: 'wrap' }}>
+                <Activity size={15} color="var(--brand-blue)" />
+                <strong style={{ fontSize: '0.84rem' }}>Expected Pattern</strong>
+                {pattern && <span className={`badge ${endReturn >= 0 ? 'badge-green' : 'badge-red'}`}>{pattern.direction} {endReturn >= 0 ? '+' : ''}{endReturn.toFixed(2)}%</span>}
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{pattern ? `${pattern.interval} · ${pattern.horizon} bars · 80% band` : 'Run a signal scan to calculate'}</span>
+                <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    Interval
+                    <select className="input" value={interval} onChange={event => setInterval(event.target.value)} style={{ width: 'auto', padding: '0.25rem 0.4rem', fontSize: '0.72rem' }} title="Each forecast step represents one candle at this interval">
+                        {SIGNAL_INTERVAL_OPTIONS.map(option => <option key={`pattern-${option.value}`} value={option.value}>{option.label}</option>)}
+                    </select>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    Time Range
+                    <select 
+                        className="input" 
+                        value={horizonMode === 'time' ? timeRange : 'custom'} 
+                        onChange={event => {
+                            const value = event.target.value;
+                            if (value === 'custom') {
+                                setHorizonMode('bars');
+                            } else {
+                                setHorizonMode('time');
+                                setTimeRange(value);
+                            }
+                        }} 
+                        style={{ width: 'auto', padding: '0.25rem 0.4rem', fontSize: '0.72rem' }} 
+                        title="Select forecast time range"
+                    >
+                        {HORIZON_TIME_RANGES.map(range => {
+                            const isDisabled = !range.intervals.includes(interval);
+                            return (
+                                <option 
+                                    key={`range-${range.value}`} 
+                                    value={range.value}
+                                    disabled={isDisabled}
+                                    style={isDisabled ? { color: '#666' } : {}}
+                                >
+                                    {range.label}
+                                </option>
+                            );
+                        })}
+                        <option value="custom">Custom bars</option>
+                    </select>
+                </label>
+                {horizonMode === 'bars' && (
+                    <input className="input" type="number" min="2" max={horizonLimit} value={horizon} onChange={event => setHorizon(Math.max(2, Math.min(horizonLimit, Number(event.target.value) || 20)))} style={{ width: 70, padding: '0.25rem 0.4rem', fontSize: '0.72rem' }} title={`Maximum ${horizonLimit} bars in ${generationMode} mode`} />
+                )}
+                {horizonMode === 'time' && (
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>≈ {horizon} bars</span>
+                )}
+                <button className="btn btn-xs btn-ghost" onClick={onRefresh} disabled={loading || !onRefresh} title="Recalculate expected pattern">
+                    <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Calculate
+                </button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', color: 'var(--text-muted)' }} title="Show detected horizontal levels and scored pivot trendlines"><input type="checkbox" checked={showLevels} onChange={event => setShowLevels(event.target.checked)} /> Levels</label>
+            </div>
+            {horizonWarning && <div style={{ marginTop: '0.55rem', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', color: 'var(--brand-yellow)', fontSize: '0.68rem' }}>{horizonWarning}</div>}
+            {error && <div style={{ marginTop: '0.55rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.24)', color: 'rgb(248,113,113)', fontSize: '0.7rem', lineHeight: 1.45 }}><strong>Expected Pattern failed:</strong> {error}</div>}
+            {loading && <div style={{ padding: '1.2rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.76rem' }}><Loader2 size={14} className="animate-spin" style={{ verticalAlign: 'text-bottom', marginRight: 6 }} />Simulating recent-bar paths…</div>}
+            {!loading && pattern && history.length > 0 && forecast.length > 0 && (
+                <>
+                    <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginTop: '0.75rem', fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, height: 2, background: 'rgba(255,255,255,0.72)' }} />Historical close</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, height: 3, background: 'var(--brand-blue)' }} />Median path</span>
+                        {calculationPath && <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, borderTop: '2px dashed var(--brand-yellow)' }} />Calculation baseline</span>}
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, height: 8, background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)' }} />80% uncertainty band</span>
+                        {showLevels && <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, borderTop: '2px dashed var(--brand-green)' }} />Support</span>}
+                        {showLevels && <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, borderTop: '2px dashed var(--brand-red)' }} />Resistance</span>}
+                    </div>
+                    <svg
+                        viewBox={`0 0 ${width} ${height}`}
+                        style={{ width: '100%', height: 'auto', minHeight: 240, marginTop: '0.25rem', cursor: 'crosshair' }}
+                        role="img"
+                        aria-label={`${pattern.symbol} historical and expected pattern`}
+                        onMouseMove={handleChartHover}
+                        onMouseLeave={() => setHoverIndex(null)}
+                    >
+                        {yTicks.map((value, index) => (
+                            <g key={index}>
+                                <line x1={padding.left} x2={width - padding.right} y1={y(value)} y2={y(value)} stroke="rgba(255,255,255,0.075)" />
+                                <text x={padding.left - 9} y={y(value) + 4} fill="rgba(255,255,255,0.48)" fontSize="11" textAnchor="end">{value.toFixed(value >= 1000 ? 0 : 2)}</text>
+                            </g>
+                        ))}
+                        <rect x={x(anchorIndex)} y={padding.top} width={Math.max(0, width - padding.right - x(anchorIndex))} height={height - padding.top - padding.bottom} fill="rgba(59,130,246,0.025)" />
+                        <polygon points={band} fill="rgba(96,165,250,0.16)" />
+                        {showLevels && (technicalLevels.supports || []).slice(0, 2).map((level, index) => <g key={`support-${index}`}><line x1={padding.left} x2={width - padding.right} y1={y(Number(level.price))} y2={y(Number(level.price))} stroke="var(--brand-green)" strokeWidth="1" strokeDasharray="4 5" opacity="0.55" /><text x={width - padding.right - 3} y={y(Number(level.price)) - 4} fill="var(--brand-green)" fontSize="9.5" textAnchor="end">S {Number(level.price).toFixed(2)} · {level.touches}x</text></g>)}
+                        {showLevels && (technicalLevels.resistances || []).slice(0, 2).map((level, index) => <g key={`resistance-${index}`}><line x1={padding.left} x2={width - padding.right} y1={y(Number(level.price))} y2={y(Number(level.price))} stroke="var(--brand-red)" strokeWidth="1" strokeDasharray="4 5" opacity="0.55" /><text x={width - padding.right - 3} y={y(Number(level.price)) + 11} fill="var(--brand-red)" fontSize="9.5" textAnchor="end">R {Number(level.price).toFixed(2)} · {level.touches}x</text></g>)}
+                        {showLevels && technicalLevels.previous_low && <g><line x1={padding.left} x2={width - padding.right} y1={y(Number(technicalLevels.previous_low.price))} y2={y(Number(technicalLevels.previous_low.price))} stroke="rgba(52,211,153,0.85)" strokeWidth="1.5" strokeDasharray="2 4" /><text x={padding.left + 4} y={y(Number(technicalLevels.previous_low.price)) - 5} fill="rgba(52,211,153,0.95)" fontSize="9.5">Previous low {Number(technicalLevels.previous_low.price).toFixed(2)}</text></g>}
+                        {showLevels && supportTrendPath && <path d={supportTrendPath} fill="none" stroke="var(--brand-green)" strokeWidth="2" strokeDasharray="7 5" opacity="0.8" />}
+                        {showLevels && resistanceTrendPath && <path d={resistanceTrendPath} fill="none" stroke="var(--brand-red)" strokeWidth="2" strokeDasharray="7 5" opacity="0.8" />}
+                        <path d={historyPath} fill="none" stroke="rgba(255,255,255,0.72)" strokeWidth="2" strokeLinejoin="round" />
+                        {calculationPath && <path d={calculationPath} fill="none" stroke="var(--brand-yellow)" strokeWidth="2" strokeDasharray="6 5" opacity="0.82" />}
+                        <path d={forecastPath} fill="none" stroke="var(--brand-blue)" strokeWidth="3" strokeLinejoin="round" />
+                        <line x1={x(anchorIndex)} x2={x(anchorIndex)} y1={padding.top} y2={height - padding.bottom} stroke="rgba(255,255,255,0.32)" strokeDasharray="5 5" />
+                        <circle cx={x(anchorIndex)} cy={y(anchor)} r="4" fill="var(--brand-blue)" stroke="white" strokeWidth="1.5" />
+                        <circle cx={x(totalPoints - 1)} cy={y(Number(forecast[forecast.length - 1].expected_close))} r="4" fill="var(--brand-blue)" />
+                        <text x={x(anchorIndex) - 8} y={padding.top + 13} fill="rgba(255,255,255,0.55)" fontSize="11" textAnchor="end">Latest actual</text>
+                        <text x={x(anchorIndex) + 8} y={padding.top + 13} fill="rgba(96,165,250,0.95)" fontSize="11">Forecast</text>
+                        <text x={padding.left} y={height - 16} fill="rgba(255,255,255,0.45)" fontSize="11">{formatAxisTime(history[0]?.time)}</text>
+                        <text x={x(anchorIndex)} y={height - 16} fill="rgba(255,255,255,0.55)" fontSize="11" textAnchor="middle">{formatAxisTime(history[anchorIndex]?.time)}</text>
+                        <text x={width - padding.right} y={height - 16} fill="rgba(96,165,250,0.9)" fontSize="11" textAnchor="end">{formatAxisTime(forecast[forecast.length - 1]?.time)}</text>
+                        {hovered && hoverX != null && hoverY != null && (
+                            <g pointerEvents="none">
+                                <line x1={hoverX} x2={hoverX} y1={padding.top} y2={height - padding.bottom} stroke="rgba(255,255,255,0.48)" strokeDasharray="3 3" />
+                                <circle cx={hoverX} cy={hoverY} r="5" fill={hovered.type === 'actual' ? 'rgba(255,255,255,0.9)' : 'var(--brand-blue)'} stroke="rgba(15,23,42,0.95)" strokeWidth="2" />
+                                <rect
+                                    x={hoverX > width * 0.72 ? hoverX - 202 : hoverX + 10}
+                                    y={Math.max(padding.top + 4, Math.min(height - padding.bottom - (hovered.type === 'forecast' ? 83 : 58), hoverY - 42))}
+                                    width="192"
+                                    height={hovered.type === 'forecast' ? 78 : 53}
+                                    rx="7"
+                                    fill="rgba(15,23,42,0.96)"
+                                    stroke="rgba(96,165,250,0.55)"
+                                />
+                                <text x={hoverX > width * 0.72 ? hoverX - 192 : hoverX + 20} y={Math.max(padding.top + 20, Math.min(height - padding.bottom - (hovered.type === 'forecast' ? 66 : 41), hoverY - 26))} fill="rgba(255,255,255,0.62)" fontSize="10.5">
+                                    {formatAxisTime(hovered.time)} · {hovered.type === 'actual' ? 'Actual' : 'Forecast'}
+                                </text>
+                                <text x={hoverX > width * 0.72 ? hoverX - 192 : hoverX + 20} y={Math.max(padding.top + 38, Math.min(height - padding.bottom - (hovered.type === 'forecast' ? 48 : 23), hoverY - 8))} fill="white" fontSize="12" fontWeight="700">
+                                    Price {hovered.price.toFixed(hovered.price >= 1000 ? 0 : 2)}
+                                </text>
+                                {hovered.type === 'forecast' && <text x={hoverX > width * 0.72 ? hoverX - 192 : hoverX + 20} y={Math.max(padding.top + 57, Math.min(height - padding.bottom - 29, hoverY + 11))} fill="rgba(96,165,250,0.9)" fontSize="10.5">80% band {hovered.lower.toFixed(2)} – {hovered.upper.toFixed(2)}</text>}
+                            </g>
+                        )}
+                    </svg>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0.5rem' }}>
+                        {[
+                            ['Latest', Number(pattern.inputs?.latest_close).toFixed(2)],
+                            ['SMA20', Number(pattern.inputs?.sma20).toFixed(2)],
+                            ['RSI14', Number(pattern.inputs?.rsi14).toFixed(1)],
+                            ['Vol / bar', `${Number(pattern.inputs?.per_bar_volatility_pct).toFixed(2)}%`],
+                            ['History', `${pattern.lookback_used} bars`],
+                        ].map(([label, value]) => (
+                            <div key={label} style={{ padding: '0.5rem 0.6rem', background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6 }}>
+                                <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>{label}</div>
+                                <div style={{ marginTop: 2, fontSize: '0.78rem', fontWeight: 800 }}>{value}</div>
+                            </div>
+                        ))}
+                    </div>
+                    {pattern.scenario_label && <div style={{ marginTop: '0.55rem', fontSize: '0.7rem', color: 'var(--text-secondary)' }}><strong>Mode:</strong> {pattern.scenario_label}{pattern.llm_model ? ` · ${pattern.llm_model}` : ''}</div>}
+                    {showLevels && technicalLevels.previous_low && <div style={{ marginTop: '0.35rem', fontSize: '0.68rem', color: 'var(--text-secondary)' }}><strong>Previous confirmed low:</strong> {Number(technicalLevels.previous_low.price).toFixed(2)} ({technicalLevels.previous_low.bars_ago} bars ago). {technicalLevels.trend_support && <>Support trendline anchors: {formatAxisTime(technicalLevels.trend_support.anchor_1?.time)} at {Number(technicalLevels.trend_support.anchor_1?.price).toFixed(2)} → {formatAxisTime(technicalLevels.trend_support.anchor_2?.time)} at {Number(technicalLevels.trend_support.anchor_2?.price).toFixed(2)} · {technicalLevels.trend_support.touches} touches · {technicalLevels.trend_support.confidence} confidence.</>}</div>}
+                    {showLevels && ((technicalLevels.trend_support_candidates || []).length > 0 || (technicalLevels.trend_resistance_candidates || []).length > 0) && (
+                        <details style={{ marginTop: '0.55rem', border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '0.5rem 0.6rem' }}>
+                            <summary style={{ cursor: 'pointer', fontSize: '0.7rem', fontWeight: 800 }}>Nearby slope candidates ({(technicalLevels.trend_support_candidates || []).length} support · {(technicalLevels.trend_resistance_candidates || []).length} resistance)</summary>
+                            <div style={{ marginTop: '0.55rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(225px, 1fr))', gap: '0.45rem' }}>
+                                {[...(technicalLevels.trend_support_candidates || []), ...(technicalLevels.trend_resistance_candidates || [])].map((line, index) => (
+                                    <div key={`${line.kind}-${index}`} style={{ padding: '0.5rem 0.6rem', borderRadius: 6, background: line.kind === 'support' ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)', fontSize: '0.67rem', lineHeight: 1.45 }} title={`${formatAxisTime(line.anchor_1?.time)} ${line.anchor_1?.price} → ${formatAxisTime(line.anchor_2?.time)} ${line.anchor_2?.price}`}>
+                                        <strong style={{ color: line.kind === 'support' ? 'var(--brand-green)' : 'var(--brand-red)' }}>{line.kind} · {line.confidence}</strong>
+                                        <div>Now {Number(line.current_price).toFixed(2)} · {Number(line.distance_pct) >= 0 ? '+' : ''}{Number(line.distance_pct).toFixed(2)}% away</div>
+                                        <div>Slope {Number(line.slope_per_bar).toFixed(4)}/bar · {line.touches} touches · {line.violations} violations</div>
+                                        <div style={{ color: 'var(--text-muted)' }}>{formatAxisTime(line.anchor_1?.time)} → {formatAxisTime(line.anchor_2?.time)}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        </details>
+                    )}
+                    {pattern.llm_rationale && <div style={{ marginTop: '0.35rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.16)', fontSize: '0.7rem', lineHeight: 1.45 }}>{pattern.llm_regime && <><strong>Regime:</strong> {pattern.llm_regime}. </>}<strong>AI scenario:</strong> {pattern.llm_rationale}{pattern.llm_invalidation ? ` Invalidation: ${pattern.llm_invalidation}` : ''}</div>}
+                    <div style={{ marginTop: '0.45rem', fontSize: '0.66rem', color: 'var(--text-muted)' }}>{pattern.warning || 'Historical scenario—not a guaranteed prediction.'}</div>
+                </>
+            )}
+        </div>
+    );
+};
+
+const MoverStockDetail = ({ ticker, mover, onClose, onExplain, onSearchInSignal }) => {
     const [info, setInfo] = useState(null);
     const [technicals, setTechnicals] = useState(null);
     const [news, setNews] = useState([]);
@@ -242,6 +555,11 @@ const MoverStockDetail = ({ ticker, mover, onClose, onExplain }) => {
                 <button className="btn btn-xs btn-ghost" onClick={explain} style={{ marginLeft: loading ? 0 : 'auto' }}>
                     <MessageCircleQuestion size={13} /> Explain
                 </button>
+                {onSearchInSignal && (
+                    <button className="btn btn-xs btn-primary" onClick={() => onSearchInSignal(ticker)} title="Search this ticker in Trading Signal tab">
+                        <Activity size={13} /> Signal
+                    </button>
+                )}
             </div>
             <div style={{ padding: '0.9rem 1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0.65rem' }}>
                 {statCards.map(card => (
@@ -348,9 +666,18 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
     const [signalPrimaryTicker, setSignalPrimaryTicker] = useState('');
     const [signalPeriod, setSignalPeriod] = useState('3mo');
     const [signalInterval, setSignalInterval] = useState('1d');
-    const [signalIncludePeers, setSignalIncludePeers] = useState(true);
+    const [signalIncludePeers, setSignalIncludePeers] = useState(false);
     const [signalPeers, setSignalPeers] = useState([]);
     const [signalPeerSource, setSignalPeerSource] = useState('');
+    const [signalPattern, setSignalPattern] = useState(null);
+    const [signalPatternLoading, setSignalPatternLoading] = useState(false);
+    const [signalPatternError, setSignalPatternError] = useState('');
+    const [signalPatternHorizon, setSignalPatternHorizon] = useState(20);
+    const [signalPatternMode, setSignalPatternMode] = useState('calculation');
+    const [signalPatternAnalysis, setSignalPatternAnalysis] = useState(true);
+    const [signalPatternHorizonMode, setSignalPatternHorizonMode] = useState('time');
+    const [signalPatternTimeRange, setSignalPatternTimeRange] = useState('1w');
+    const [signalPatternTargetTime, setSignalPatternTargetTime] = useState('');
     const [savedSignals, setSavedSignals] = useState(() => {
         try { return JSON.parse(localStorage.getItem('movement_saved_signals') || '[]'); }
         catch { return []; }
@@ -381,6 +708,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
     }, []);
 
     useEffect(() => {
+        if (!SIGNAL_WATCHES_ENABLED) return undefined;
         loadSignalWatches();
         const timer = setInterval(loadSignalWatches, 30000);
         return () => clearInterval(timer);
@@ -429,7 +757,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
         setSignalPrimaryTicker('');
         setSignalPeers([]);
         if (options.remember !== false) rememberUniverse(label, parsed);
-        notifyRef.current?.(`${label} loaded (${parsed.length} tickers)`, 'green');
+        notifyRef.current?.(`${label} selected (${parsed.length} tickers); fetching usable prices`, 'green');
     };
 
     const applyTickerUniverse = () => {
@@ -518,7 +846,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
         const cachedPayload = cachedMovements.get(cacheKey);
         if (!forceRefresh && cachedPayload && Date.now() - cachedPayload.savedAt < MOVEMENT_CACHE_TTL_MS) {
             setEntries(cachedPayload.items);
-            setLoadedCount(activeTickers.length);
+            setLoadedCount(cachedPayload.items.length);
             setLoading(false);
             setLoadingStage('Loaded from cache');
             return;
@@ -537,7 +865,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                     const chunk = chunks[cursor];
                     cursor += 1;
                     if (requestIdRef.current !== requestId) return;
-                    setLoadingStage(`${currentWindow.interval ? `Fetching ${currentWindow.label} candles` : 'Fetching latest prices'} · ${completedTickers}/${activeTickers.length}`);
+                    setLoadingStage(`${currentWindow.interval ? `Fetching ${currentWindow.label} candles` : 'Fetching latest prices'} · ${merged.size} usable · ${completedTickers}/${activeTickers.length} checked`);
                     try {
                         const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}`, chunk, {
                             signal: controller.signal,
@@ -557,8 +885,8 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                     } finally {
                         completedTickers += chunk.length;
                         if (requestIdRef.current === requestId && !controller.signal.aborted) {
-                            setLoadedCount(Math.min(completedTickers, activeTickers.length));
-                            setLoadingStage(`${currentWindow.interval ? `Fetching ${currentWindow.label} candles` : 'Fetching latest prices'} · ${Math.min(completedTickers, activeTickers.length)}/${activeTickers.length}`);
+                            setLoadedCount(merged.size);
+                            setLoadingStage(`${currentWindow.interval ? `Fetching ${currentWindow.label} candles` : 'Fetching latest prices'} · ${merged.size} usable · ${Math.min(completedTickers, activeTickers.length)}/${activeTickers.length} checked`);
                         }
                     }
                 }
@@ -569,7 +897,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
             const finalEntries = Array.from(merged.values()).sort((a, b) => (b.change_percent ?? -Infinity) - (a.change_percent ?? -Infinity));
             cachedMovements.set(cacheKey, { items: finalEntries, savedAt: Date.now() });
             setEntries(finalEntries);
-            setLoadedCount(activeTickers.length);
+            setLoadedCount(finalEntries.length);
             if (finalEntries.length === 0 && failedChunks > 0) {
                 notifyRef.current?.('Movement price fetch timed out before any usable quotes loaded. Try fewer tickers or refresh.', 'yellow');
             } else if (finalEntries.length === 0) {
@@ -581,9 +909,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
             }
         } finally {
             if (requestIdRef.current === requestId) {
-                if (merged.size === 0 && !controller.signal.aborted) {
-                    setLoadedCount(activeTickers.length);
-                }
+                if (!controller.signal.aborted) setLoadedCount(merged.size);
                 setLoading(false);
                 setLoadingStage('');
             }
@@ -794,6 +1120,38 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
         }
     }, [getPeerTickers]);
 
+    const loadExpectedPattern = useCallback(async (ticker, interval = signalInterval, horizon = signalPatternHorizon, mode = signalPatternMode) => {
+        const symbol = String(ticker || '').trim().toUpperCase();
+        if (!symbol) return;
+        setSignalPatternLoading(true);
+        setSignalPatternError('');
+        try {
+            const api = getApiSettings();
+            const response = await axios.post(`${INTELLIGENCE_SERVICE}/expected-pattern/${encodeURIComponent(symbol)}/scenario`, {
+                mode,
+                interval,
+                horizon,
+                lookback: 180,
+                extended_hours: extended,
+                provider: api.provider,
+                model: api.model,
+                api_key: api.api_key,
+                provider_config: api.provider_config,
+                include_analysis: signalPatternAnalysis,
+            }, {
+                timeout: mode === 'calculation' ? 30000 : 180000,
+            });
+            setSignalPattern(response.data);
+        } catch (error) {
+            setSignalPattern(null);
+            const message = expectedPatternErrorMessage(error);
+            setSignalPatternError(message);
+            notifyRef.current?.(message, 'yellow');
+        } finally {
+            setSignalPatternLoading(false);
+        }
+    }, [signalInterval, signalPatternHorizon, signalPatternMode, signalPatternAnalysis, extended]);
+
     const loadSignalStats = useCallback(async (tickers, options = {}) => {
         const rawTargets = parseTickers(Array.isArray(tickers) ? tickers.join(', ') : tickers)
             .filter(isPrimarySignalTicker)
@@ -805,6 +1163,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
         }
         setSignalLoading(true);
         setSignalStats([]);
+        setSignalPattern(null);
         setSignalPrimaryTicker(primary);
         setSignalPeers([]);
         setSignalPeerSource(signalIncludePeers && rawTargets.length === 1 ? 'resolving peers...' : '');
@@ -826,6 +1185,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
         setSignalPeerSource(peerResult.source || '');
         setSelectedSignalTickers(targets);
         setSignalInput(targets.join(', '));
+        loadExpectedPattern(primary, requestedInterval, signalPatternHorizon, signalPatternMode);
         if (cachedTradingSignals.has(key)) {
             setSignalStats(cachedTradingSignals.get(key));
             setSignalLoading(false);
@@ -845,7 +1205,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
         }).finally(() => {
             if (!controller.signal.aborted) setSignalLoading(false);
         });
-    }, [signalPeriod, signalInterval, signalIncludePeers, resolvePeerTickers]);
+    }, [signalPeriod, signalInterval, signalIncludePeers, resolvePeerTickers, loadExpectedPattern, signalPatternHorizon, signalPatternMode]);
 
     useEffect(() => {
         if (activeTab !== 'news' || newsMovers.length === 0) {
@@ -1159,7 +1519,9 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                     <div style={{ marginTop: '0.25rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
                         <span style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>{activeUniverseLabel}</span>
                         {' · '}
-                        {loading ? `${loadingStage || 'Loading movers'}${loadedCount > 0 ? ` · ${loadedCount}/${activeTickers.length}` : ''}` : `${entries.length}/${activeTickers.length} tracked stocks loaded`}
+                        {loading
+                            ? (loadingStage || `Loading movers · ${loadedCount} usable`)
+                            : `${entries.length} shown · ${activeTickers.length} selected${activeTickers.length > entries.length ? ` · ${activeTickers.length - entries.length} unavailable` : ''}`}
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1173,10 +1535,10 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                         <Activity size={14} style={{ verticalAlign: 'text-bottom', marginRight: 6 }} /> Trading Signal
                         {unreadSignalEvents > 0 && <span style={{ marginLeft: 5, minWidth: 16, height: 16, lineHeight: '16px', borderRadius: 8, display: 'inline-block', background: 'var(--brand-red)', color: '#fff', fontSize: '0.62rem' }}>{unreadSignalEvents}</span>}
                     </button>
-                    <button style={subTabStyle(activeTab === 'watches')} onClick={() => setActiveTab('watches')}>
+                    {SIGNAL_WATCHES_ENABLED && <button style={subTabStyle(activeTab === 'watches')} onClick={() => setActiveTab('watches')}>
                         <Bell size={14} style={{ verticalAlign: 'text-bottom', marginRight: 6 }} /> Signal Watches
                         {unreadSignalEvents > 0 && <span style={{ marginLeft: 5, minWidth: 16, height: 16, lineHeight: '16px', borderRadius: 8, display: 'inline-block', background: 'var(--brand-red)', color: '#fff', fontSize: '0.62rem' }}>{unreadSignalEvents}</span>}
-                    </button>
+                    </button>}
                     <button className="btn btn-sm btn-ghost" onClick={explainMovements} title="Ask assistant to explain these movers with news">
                         <MessageCircleQuestion size={14} /> Explain
                     </button>
@@ -1316,6 +1678,11 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                                 mover={selectedMover}
                                 onClose={() => setSelectedMover(null)}
                                 onExplain={onExplain}
+                                onSearchInSignal={(ticker) => {
+                                    setSignalInput(ticker);
+                                    setActiveTab('signal');
+                                    setSelectedMover(null);
+                                }}
                             />
                         </div>
                     )}
@@ -1388,6 +1755,30 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                                 </div>
                             )}
                         </div>
+                        <div style={{ display: 'flex', gap: '0.25rem', padding: '0.2rem', border: '1px solid var(--border-subtle)', borderRadius: 7, background: 'var(--bg-accent)' }} title="Choose how Expected Pattern is generated before scanning">
+                            {[
+                                ['calculation', 'Calculation'],
+                                ['llm', 'LLM'],
+                                ['hybrid', 'Hybrid'],
+                            ].map(([value, label]) => (
+                                <button
+                                    key={value}
+                                    type="button"
+                                    className={`btn btn-xs ${signalPatternMode === value ? 'btn-primary' : 'btn-ghost'}`}
+                                    onClick={() => { setSignalPatternMode(value); setSignalPatternHorizon(current => Math.min(current, value === 'calculation' ? 250 : 120)); setSignalPattern(null); }}
+                                    title={value === 'calculation' ? 'Reproducible statistical simulation; no model tokens' : value === 'llm' ? 'LLM generates the future return path from supplied bar statistics' : '70% calculation path and 30% constrained LLM path'}
+                                    style={{ fontSize: '0.7rem', padding: '0.28rem 0.45rem' }}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
+                        {signalPatternMode !== 'calculation' && (
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.7rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title="Show a concise model rationale, regime, and invalidation summary. This does not expose hidden chain-of-thought.">
+                                <input type="checkbox" checked={signalPatternAnalysis} onChange={event => setSignalPatternAnalysis(event.target.checked)} />
+                                AI reasoning summary
+                            </label>
+                        )}
                         <button className="btn btn-xs btn-primary" onClick={() => loadSignalStats(signalInput)} disabled={signalLoading}>
                             {signalLoading && <Loader2 size={12} className="animate-spin" />} Scan
                         </button>
@@ -1411,6 +1802,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                                 const nextInterval = e.target.value;
                                 setSignalInterval(nextInterval);
                                 setSignalPeriod(prev => normalizeSignalPeriod(prev, nextInterval));
+                                setSignalPattern(null);
                             }}
                             style={{ width: 'auto', padding: '0.32rem 0.55rem', fontSize: '0.76rem' }}
                             title="Candle interval for day trading or swing trading signal stats"
@@ -1434,7 +1826,28 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                     <div style={{ padding: '0.55rem 1rem 0', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                         Source: live yfinance OHLCV, not saved datasets. {signalPeers.length > 0 ? `Peers for ${signalPrimaryTicker}: ${signalPeers.join(', ')} (${signalPeerSource || 'peer resolver'})` : `Peer resolver: ${signalPeerSource || 'scan one ticker with Peers on to add comparable names.'}`}
                     </div>
-                    <div className="terminal-card" style={{ margin: '0.9rem 1rem 0', padding: '0.8rem' }}>
+                    <SignalExpectedPattern
+                        pattern={signalPattern}
+                        loading={signalPatternLoading}
+                        error={signalPatternError}
+                        horizon={signalPatternHorizon}
+                        setHorizon={setSignalPatternHorizon}
+                        interval={signalInterval}
+                        generationMode={signalPatternMode}
+                        horizonMode={signalPatternHorizonMode}
+                        setHorizonMode={setSignalPatternHorizonMode}
+                        targetTime={signalPatternTargetTime}
+                        setTargetTime={setSignalPatternTargetTime}
+                        timeRange={signalPatternTimeRange}
+                        setTimeRange={setSignalPatternTimeRange}
+                        setInterval={value => {
+                            setSignalInterval(value);
+                            setSignalPeriod(previous => normalizeSignalPeriod(previous, value));
+                            setSignalPattern(null);
+                        }}
+                        onRefresh={signalPrimaryTicker ? () => loadExpectedPattern(signalPrimaryTicker, signalInterval, signalPatternHorizon, signalPatternMode) : null}
+                    />
+                    {SIGNAL_WATCHES_ENABLED && <div className="terminal-card" style={{ margin: '0.9rem 1rem 0', padding: '0.8rem' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flexWrap: 'wrap', marginBottom: '0.65rem' }}>
                             <BellRing size={15} color="var(--brand-blue)" />
                             <strong style={{ fontSize: '0.84rem' }}>Signal Watch</strong>
@@ -1453,7 +1866,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                         </div>
                         {signalWatches.length > 0 && <div style={{ marginTop: '0.7rem', display: 'grid', gap: '0.35rem' }}>{signalWatches.map(watch => <div key={watch.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.73rem', background: 'var(--bg-accent)', padding: '0.45rem 0.55rem', borderRadius: 6, flexWrap: 'wrap' }}><Bell size={12} color={watch.enabled ? 'var(--brand-green)' : 'var(--text-muted)'} /><strong>{watch.tickers.join(', ')}</strong><span>{watch.direction} {watch.threshold_percent}% / {watch.window}{watch.require_volume ? ` · ${watch.volume_multiplier}x volume` : ''}</span><span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>{watch.last_status || 'Waiting'}</span><button className="btn btn-xs btn-ghost" onClick={() => toggleSignalWatch(watch)}>{watch.enabled ? 'Pause' : 'Resume'}</button><button className="btn btn-xs btn-ghost" onClick={() => deleteSignalWatch(watch)} title="Delete watch"><Trash2 size={12} /></button></div>)}</div>}
                         {signalEvents.length > 0 && <div style={{ marginTop: '0.7rem' }}><div style={{ fontSize: '0.75rem', fontWeight: 700, marginBottom: '0.35rem' }}>Alert Inbox</div>{signalEvents.slice(0, 6).map(event => <button key={event.id} onClick={() => openSignalEvent(event)} style={{ width: '100%', textAlign: 'left', border: '1px solid var(--border-subtle)', background: event.read ? 'transparent' : 'rgba(59,130,246,0.08)', color: 'var(--text-primary)', padding: '0.45rem 0.55rem', borderRadius: 6, cursor: 'pointer', marginBottom: '0.3rem', fontSize: '0.73rem' }}><strong>{event.ticker}</strong> {event.move_percent >= 0 ? '+' : ''}{event.move_percent}% in {event.window} · {event.volume_ratio != null ? `${event.volume_ratio}x volume` : 'volume unavailable'} <span style={{ float: 'right', color: 'var(--text-muted)' }}>{event.created_at ? formatDate(event.created_at) : ''}</span></button>)}</div>}
-                    </div>
+                    </div>}
                     <div style={{ padding: '1rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '0.75rem' }}>
                         {[
                             { label: 'Peer Avg Move', value: signalPeerStats.avgMove != null ? `${signalPeerStats.avgMove.toFixed(2)}%` : '-', help: 'Average latest close-to-previous-close return across the loaded target and peer symbols.' },

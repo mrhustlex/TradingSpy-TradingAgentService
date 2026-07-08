@@ -20,6 +20,8 @@ beautifulsoup4==4.12.2
     # via
     #   -r backend/requirements.in
     #   yfinance
+pypdf==6.4.2
+    # via -r backend/requirements.in
 certifi==2026.6.17
     # via
     #   curl-cffi

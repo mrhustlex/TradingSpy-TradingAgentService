@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, Suspense, lazy } from 'rea
 import axios from 'axios';
 import { Send, Bot, User, Wand2, Play, Database, RefreshCw, Copy, Check, Trash2, MessageSquare, X, StopCircle, Plus, Edit2, Square, Share, Download, FileText, Printer, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API_BASE, BACKTEST_SERVICE, DATA_SERVICE, OPTIMIZER_SERVICE, SETTINGS_URL } from '../config';
+import { API_BASE, BACKTEST_SERVICE, DATA_SERVICE, OPTIMIZER_SERVICE, SETTINGS_URL, INTELLIGENCE_SERVICE } from '../config';
 import { formatDatasetName } from '../utils/formatters';
 import { getApiSettings } from '../utils/apiKeyHelper';
 
@@ -30,6 +30,15 @@ const API_KEY_STORAGE = {
     litellm: 'settings_litellm_api_key',
     ollama: 'settings_ollama_api_key',
 };
+const DEFAULT_SUGGESTED_PROMPTS = [
+    'Give me a daily market brief with breadth, strongest and weakest industries, important news, earnings, and insider activity.',
+    'Show the expected pattern for QQQ over the next 20 daily bars, including the uncertainty band and key invalidation risks.',
+    'Scan NVDA and its peers using 15-minute candles, then explain whether the latest move has price and volume confirmation.',
+    'Deep dive CRWD using fundamentals, valuation, technicals, products, recent catalysts, insider trades, and a bull/bear case.',
+    'Generate three daily QQQ strategies, backtest all of them, compare them with buy-and-hold, and reject zero-trade results.',
+    'Research public mean-reversion strategies, build an original implementation, and explain which sources were actually read.',
+    'Check my available datasets and strategies, then recommend the most useful next backtest without changing anything yet.',
+];
 const AGENT_TERMINAL_STATUSES = ['completed', 'failed', 'stopped', 'stale'];
 const isAgentTerminalStatus = (status) => AGENT_TERMINAL_STATUSES.includes(status);
 const estimateTokens = (value) => {
@@ -45,6 +54,57 @@ const formatMarketCap = (value) => {
     if (Math.abs(amount) >= 1_000_000_000) return `$${(amount / 1_000_000_000).toFixed(2)}B`;
     if (Math.abs(amount) >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
     return `$${amount.toLocaleString()}`;
+};
+const estimatePatternBarsUntil = (targetValue, interval) => {
+    const target = new Date(targetValue);
+    const now = new Date();
+    if (Number.isNaN(target.getTime()) || target <= now) return 2;
+    const minutes = { '1m': 1, '2m': 2, '5m': 5, '15m': 15, '30m': 30, '60m': 60, '90m': 90, '1h': 60 }[interval];
+    if (minutes) return Math.max(2, Math.ceil((target - now) / 60000 / minutes));
+    if (interval === '1wk') return Math.max(2, Math.ceil((target - now) / 604800000));
+    if (interval === '1mo') return Math.max(2, Math.ceil((target - now) / 2592000000));
+    let bars = 0;
+    const cursor = new Date(now);
+    while (cursor < target && bars <= 5000) {
+        cursor.setDate(cursor.getDate() + 1);
+        if (cursor.getDay() !== 0 && cursor.getDay() !== 6) bars += interval === '5d' ? 0.2 : 1;
+    }
+    return Math.max(2, Math.ceil(bars));
+};
+
+const HORIZON_TIME_RANGES = [
+    { value: '1d', label: '1 Day', intervals: ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h'] },
+    { value: '3d', label: '3 Days', intervals: ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h'] },
+    { value: '1w', label: '1 Week', intervals: ['15m', '30m', '60m', '90m', '1h', '1d'] },
+    { value: '2w', label: '2 Weeks', intervals: ['60m', '90m', '1h', '1d'] },
+    { value: '1mo', label: '1 Month', intervals: ['60m', '90m', '1h', '1d', '1wk'] },
+    { value: '3mo', label: '3 Months', intervals: ['1d', '1wk'] },
+    { value: '6mo', label: '6 Months', intervals: ['1d', '1wk'] },
+];
+
+const estimateBarsForTimeRange = (timeRange, interval) => {
+    const now = new Date();
+    const target = new Date(now);
+    
+    switch (timeRange) {
+        case '1d': target.setDate(now.getDate() + 1); break;
+        case '3d': target.setDate(now.getDate() + 3); break;
+        case '1w': target.setDate(now.getDate() + 7); break;
+        case '2w': target.setDate(now.getDate() + 14); break;
+        case '1mo': target.setMonth(now.getMonth() + 1); break;
+        case '3mo': target.setMonth(now.getMonth() + 3); break;
+        case '6mo': target.setMonth(now.getMonth() + 6); break;
+        default: return 20;
+    }
+    
+    return estimatePatternBarsUntil(target.toISOString(), interval);
+};
+const formatExpectedPatternError = error => {
+    const detail = error?.response?.data?.detail;
+    if (detail && typeof detail === 'object') return `${detail.message || 'Expected pattern failed.'}${detail.action ? ` ${detail.action}` : ''}`;
+    if (typeof detail === 'string') return detail;
+    if (error?.code === 'ECONNABORTED') return 'Expected Pattern timed out. Retry, shorten the horizon, choose another model, or use Calculation mode.';
+    return error?.message || 'Expected pattern could not be calculated. Check market data and model settings, or use Calculation mode.';
 };
 const getMessageSender = (message = {}) => message.sender || message.role || message.type;
 const isUserMessage = (message = {}) => getMessageSender(message) === 'user';
@@ -95,6 +155,243 @@ const MiniChart = React.memo(function MiniChart({ symbol, bars }) {
     );
 });
 
+const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
+    const [pattern, setPattern] = useState(data);
+    const [mode, setMode] = useState(data?.scenario_mode || 'calculation');
+    const [horizon, setHorizon] = useState(data?.horizon || 20);
+    const [horizonMode, setHorizonMode] = useState('time');
+    const [timeRange, setTimeRange] = useState('1w');
+    const [targetTime, setTargetTime] = useState('');
+    const [interval, setInterval] = useState(data?.interval || '1d');
+    const [includeAnalysis, setIncludeAnalysis] = useState(true);
+    const [recalculating, setRecalculating] = useState(false);
+    const [showLevels, setShowLevels] = useState(true);
+    const [hoverIndex, setHoverIndex] = useState(null);
+    const [agentUpdate, setAgentUpdate] = useState('');
+    const [scenarioError, setScenarioError] = useState('');
+    useEffect(() => {
+        setPattern(data);
+        setMode(data?.scenario_mode || 'calculation');
+        setHorizon(data?.horizon || 20);
+        setInterval(data?.interval || '1d');
+    }, [data]);
+    const horizonLimit = mode === 'calculation' ? 250 : 120;
+    const rawTargetBars = horizonMode === 'timestamp' && targetTime 
+        ? estimatePatternBarsUntil(targetTime, interval) 
+        : horizonMode === 'time' && timeRange
+        ? estimateBarsForTimeRange(timeRange, interval)
+        : horizon;
+    useEffect(() => {
+        if (horizonMode === 'timestamp' && targetTime) {
+            setHorizon(Math.min(horizonLimit, estimatePatternBarsUntil(targetTime, interval)));
+        } else if (horizonMode === 'time' && timeRange) {
+            const bars = estimateBarsForTimeRange(timeRange, interval);
+            setHorizon(Math.min(bars, horizonLimit));
+        }
+    }, [horizonMode, targetTime, timeRange, interval, horizonLimit]);
+    const horizonWarning = rawTargetBars > horizonLimit
+        ? `Target exceeds the ${horizonLimit}-bar ${mode} limit and will be truncated.`
+        : horizon > (mode === 'calculation' ? 60 : 40)
+            ? `Long ${horizon}-bar scenarios compound uncertainty; 20 bars is the recommended default.`
+            : '';
+
+    const history = pattern?.history || [];
+    const forecast = pattern?.forecast || [];
+    if (!history.length || !forecast.length) return null;
+
+    const width = 900;
+    const height = 350;
+    const padding = { left: 62, right: 24, top: 30, bottom: 42 };
+    const values = [
+        ...history.map(row => Number(row.close)),
+        ...forecast.flatMap(row => [Number(row.lower_80), Number(row.upper_80), Number(row.expected_close)]),
+    ].filter(Number.isFinite);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = Math.max(max - min, Math.abs(max || 1) * 0.01);
+    const yMin = min - range * 0.08;
+    const yMax = max + range * 0.08;
+    const totalPoints = history.length + forecast.length;
+    const x = index => padding.left + (index / Math.max(1, totalPoints - 1)) * (width - padding.left - padding.right);
+    const y = value => padding.top + ((yMax - value) / (yMax - yMin)) * (height - padding.top - padding.bottom);
+    const historyPath = history.map((row, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(Number(row.close))}`).join(' ');
+    const anchorIndex = history.length - 1;
+    const expectedPoints = [{ expected_close: history[anchorIndex].close }, ...forecast];
+    const forecastPath = expectedPoints.map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.expected_close))}`).join(' ');
+    const calculationPath = forecast.some(row => row.calculation_close != null)
+        ? [{ calculation_close: history[anchorIndex].close }, ...forecast].map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.calculation_close))}`).join(' ')
+        : '';
+    const technicalLevels = pattern?.technical_levels || {};
+    const trendPath = trend => {
+        const points = (trend?.points || []).slice(-totalPoints);
+        return points.length === totalPoints ? points.map((point, index) => `${index ? 'L' : 'M'} ${x(index)} ${y(Number(point.price))}`).join(' ') : '';
+    };
+    const supportTrendPath = trendPath(technicalLevels.trend_support);
+    const resistanceTrendPath = trendPath(technicalLevels.trend_resistance);
+    const upperPoints = forecast.map((row, index) => `${x(history.length + index)},${y(Number(row.upper_80))}`);
+    const lowerPoints = [...forecast].reverse().map((row, reverseIndex) => {
+        const index = forecast.length - 1 - reverseIndex;
+        return `${x(history.length + index)},${y(Number(row.lower_80))}`;
+    });
+    const bandPoints = [
+        `${x(anchorIndex)},${y(Number(history[anchorIndex].close))}`,
+        ...upperPoints,
+        ...lowerPoints,
+    ].join(' ');
+    const ticks = Array.from({ length: 5 }, (_, index) => yMin + ((yMax - yMin) * index / 4));
+
+    const downloadCsv = () => {
+        const columns = pattern.csv_columns || ['step', 'time', 'expected_close', 'lower_80', 'upper_80', 'expected_return_pct'];
+        const escape = value => `"${String(value ?? '').replaceAll('"', '""')}"`;
+        const csv = [columns.join(','), ...(pattern.csv_rows || forecast).map(row => columns.map(column => escape(row[column])).join(','))].join('\n');
+        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${pattern.symbol || 'market'}_${pattern.interval || '1d'}_expected_pattern.csv`;
+        link.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const recalculate = async (requestedMode = mode, requestedInterval = interval, requestedHorizon = horizon) => {
+        setRecalculating(true);
+        setScenarioError('');
+        try {
+            const api = getApiSettings();
+            const response = await axios.post(`${INTELLIGENCE_SERVICE}/expected-pattern/${encodeURIComponent(pattern.symbol)}/scenario`, {
+                mode: requestedMode,
+                interval: requestedInterval,
+                horizon: requestedHorizon,
+                lookback: pattern.lookback_used || 180,
+                provider: api.provider,
+                model: api.model,
+                api_key: api.api_key,
+                provider_config: api.provider_config,
+                include_analysis: includeAnalysis,
+            }, { timeout: requestedMode === 'calculation' ? 30000 : 180000 });
+            const updated = response.data;
+            setPattern(updated);
+            setInterval(updated.interval || requestedInterval);
+            setHorizon(updated.horizon || requestedHorizon);
+            const returnValue = Number(updated.expected_end_return_pct || 0);
+            const modeLabel = updated.scenario_label || requestedMode;
+            const rationale = updated.llm_rationale ? ` ${updated.llm_rationale}` : '';
+            setAgentUpdate(`${modeLabel}: ${updated.symbol} is ${updated.direction} over ${updated.horizon} ${updated.interval} bars (${returnValue >= 0 ? '+' : ''}${returnValue.toFixed(2)}%).${rationale}`);
+        } catch (error) {
+            setScenarioError(formatExpectedPatternError(error));
+        } finally {
+            setRecalculating(false);
+        }
+    };
+
+    const endReturn = Number(pattern.expected_end_return_pct || 0);
+    const hovered = hoverIndex == null ? null : hoverIndex < history.length
+        ? { type: 'Actual', time: history[hoverIndex]?.time, price: Number(history[hoverIndex]?.close) }
+        : (() => {
+            const row = forecast[hoverIndex - history.length];
+            return row ? { type: 'Forecast', time: row.time, price: Number(row.expected_close), lower: Number(row.lower_80), upper: Number(row.upper_80) } : null;
+        })();
+    const handleHover = event => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (!rect.width) return;
+        const viewX = ((event.clientX - rect.left) / rect.width) * width;
+        const ratio = (viewX - padding.left) / (width - padding.left - padding.right);
+        setHoverIndex(Math.max(0, Math.min(totalPoints - 1, Math.round(ratio * (totalPoints - 1)))));
+    };
+    const assistantIntervals = ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo'];
+    return (
+        <div className="terminal-card" style={{ marginTop: '0.7rem', padding: '0.85rem', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+                <div>
+                    <div style={{ fontSize: '0.72rem', opacity: 0.55, letterSpacing: '0.07em' }}>EXPECTED PATTERN · {pattern.interval} · {pattern.horizon} BARS</div>
+                    <div style={{ fontSize: '1rem', fontWeight: 700, marginTop: '0.15rem' }}>
+                        {pattern.symbol} · <span style={{ color: endReturn >= 0 ? 'var(--brand-green)' : 'var(--brand-red)' }}>{pattern.direction} {endReturn >= 0 ? '+' : ''}{endReturn.toFixed(2)}%</span>
+                    </div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {['calculation', 'llm', 'hybrid'].map(value => <button key={value} className={`btn btn-xs ${mode === value ? 'btn-primary' : 'btn-ghost'}`} disabled={recalculating} onClick={() => { const nextHorizon = Math.min(horizon, value === 'calculation' ? 250 : 120); setMode(value); setHorizon(nextHorizon); recalculate(value, interval, nextHorizon); }}>{value === 'llm' ? 'LLM' : value[0].toUpperCase() + value.slice(1)}</button>)}
+                    <select className="input" value={interval} onChange={event => { setInterval(event.target.value); setAgentUpdate(''); }} style={{ width: 'auto', padding: '0.22rem 0.35rem', fontSize: '0.68rem' }} title="Forecast candle interval">{assistantIntervals.map(value => <option key={value} value={value}>{value}</option>)}</select>
+                    <select 
+                        className="input" 
+                        value={horizonMode === 'time' ? timeRange : 'custom'} 
+                        onChange={event => {
+                            const value = event.target.value;
+                            if (value === 'custom') {
+                                setHorizonMode('bars');
+                            } else {
+                                setHorizonMode('time');
+                                setTimeRange(value);
+                            }
+                        }} 
+                        style={{ width: 'auto', padding: '0.22rem 0.35rem', fontSize: '0.68rem' }} 
+                        title="Select forecast time range"
+                    >
+                        {HORIZON_TIME_RANGES.map(range => {
+                            const isDisabled = !range.intervals.includes(interval);
+                            return (
+                                <option 
+                                    key={`range-${range.value}`} 
+                                    value={range.value}
+                                    disabled={isDisabled}
+                                    style={isDisabled ? { color: '#666' } : {}}
+                                >
+                                    {range.label}
+                                </option>
+                            );
+                        })}
+                        <option value="custom">Custom bars</option>
+                    </select>
+                    {horizonMode === 'bars' && (
+                        <input className="input" type="number" min="2" max={horizonLimit} value={horizon} onChange={event => setHorizon(Math.max(2, Math.min(horizonLimit, Number(event.target.value) || 20)))} style={{ width: 68, padding: '0.22rem 0.35rem', fontSize: '0.7rem' }} />
+                    )}
+                    {horizonMode === 'time' && (
+                        <span style={{ fontSize: '0.66rem', opacity: 0.75 }}>≈ {horizon} bars</span>
+                    )}
+                    {mode !== 'calculation' && <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', opacity: 0.7 }} title="Concise rationale, regime, and invalidation summary—not hidden chain-of-thought"><input type="checkbox" checked={includeAnalysis} onChange={event => setIncludeAnalysis(event.target.checked)} /> AI summary</label>}
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', opacity: 0.7 }} title="Show horizontal support/resistance and scored pivot trendlines"><input type="checkbox" checked={showLevels} onChange={event => setShowLevels(event.target.checked)} /> Levels</label>
+                    <button className="btn btn-ghost btn-xs" onClick={() => recalculate(mode, interval, horizon)} disabled={recalculating}><RefreshCw size={13} className={recalculating ? 'animate-spin' : ''} /> Generate</button>
+                    <button className="btn btn-ghost btn-xs" onClick={downloadCsv}><Download size={14} /> CSV</button>
+                </div>
+            </div>
+            {horizonWarning && <div style={{ marginTop: '0.55rem', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', color: 'var(--brand-yellow)', fontSize: '0.68rem' }}>{horizonWarning}</div>}
+            {scenarioError && <div style={{ marginTop: '0.55rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.24)', color: 'rgb(248,113,113)', fontSize: '0.7rem', lineHeight: 1.45 }}><strong>Expected Pattern failed:</strong> {scenarioError}</div>}
+            {agentUpdate && <div style={{ marginTop: '0.6rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.18)', fontSize: '0.72rem', lineHeight: 1.45 }}><strong>Assistant update:</strong> {agentUpdate}</div>}
+            <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${pattern.symbol} expected price pattern`} onMouseMove={handleHover} onMouseLeave={() => setHoverIndex(null)} style={{ width: '100%', height: 'auto', marginTop: '0.65rem', cursor: 'crosshair' }}>
+                {ticks.map((value, index) => (
+                    <g key={index}>
+                        <line x1={padding.left} x2={width - padding.right} y1={y(value)} y2={y(value)} stroke="rgba(255,255,255,0.08)" />
+                        <text x={padding.left - 8} y={y(value) + 4} fill="rgba(255,255,255,0.5)" fontSize="11" textAnchor="end">{value.toFixed(2)}</text>
+                    </g>
+                ))}
+                <line x1={x(anchorIndex)} x2={x(anchorIndex)} y1={padding.top} y2={height - padding.bottom} stroke="rgba(255,255,255,0.25)" strokeDasharray="4 4" />
+                <polygon points={bandPoints} fill="rgba(96,165,250,0.16)" stroke="none" />
+                {showLevels && (technicalLevels.supports || []).slice(0, 2).map((level, index) => <g key={`support-${index}`}><line x1={padding.left} x2={width - padding.right} y1={y(Number(level.price))} y2={y(Number(level.price))} stroke="var(--brand-green)" strokeWidth="1" strokeDasharray="4 5" opacity="0.55" /><text x={width - padding.right - 3} y={y(Number(level.price)) - 4} fill="var(--brand-green)" fontSize="9.5" textAnchor="end">S {Number(level.price).toFixed(2)} · {level.touches}x</text></g>)}
+                {showLevels && (technicalLevels.resistances || []).slice(0, 2).map((level, index) => <g key={`resistance-${index}`}><line x1={padding.left} x2={width - padding.right} y1={y(Number(level.price))} y2={y(Number(level.price))} stroke="var(--brand-red)" strokeWidth="1" strokeDasharray="4 5" opacity="0.55" /><text x={width - padding.right - 3} y={y(Number(level.price)) + 11} fill="var(--brand-red)" fontSize="9.5" textAnchor="end">R {Number(level.price).toFixed(2)} · {level.touches}x</text></g>)}
+                {showLevels && technicalLevels.previous_low && <g><line x1={padding.left} x2={width - padding.right} y1={y(Number(technicalLevels.previous_low.price))} y2={y(Number(technicalLevels.previous_low.price))} stroke="rgba(52,211,153,0.85)" strokeWidth="1.5" strokeDasharray="2 4" /><text x={padding.left + 4} y={y(Number(technicalLevels.previous_low.price)) - 5} fill="rgba(52,211,153,0.95)" fontSize="9.5">Previous low {Number(technicalLevels.previous_low.price).toFixed(2)}</text></g>}
+                {showLevels && supportTrendPath && <path d={supportTrendPath} fill="none" stroke="var(--brand-green)" strokeWidth="2" strokeDasharray="7 5" opacity="0.8" />}
+                {showLevels && resistanceTrendPath && <path d={resistanceTrendPath} fill="none" stroke="var(--brand-red)" strokeWidth="2" strokeDasharray="7 5" opacity="0.8" />}
+                <path d={historyPath} fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" />
+                {calculationPath && <path d={calculationPath} fill="none" stroke="var(--brand-yellow)" strokeWidth="2" strokeDasharray="6 5" opacity="0.82" />}
+                <path d={forecastPath} fill="none" stroke="var(--brand-blue)" strokeWidth="3" />
+                <text x={x(anchorIndex) - 8} y={height - 17} fill="rgba(255,255,255,0.55)" fontSize="11" textAnchor="end">History</text>
+                <text x={x(anchorIndex) + 8} y={height - 17} fill="rgba(96,165,250,0.95)" fontSize="11">Forecast + 80% band</text>
+                {hovered && <g pointerEvents="none"><line x1={x(hoverIndex)} x2={x(hoverIndex)} y1={padding.top} y2={height - padding.bottom} stroke="rgba(255,255,255,0.48)" strokeDasharray="3 3" /><circle cx={x(hoverIndex)} cy={y(hovered.price)} r="5" fill={hovered.type === 'Actual' ? 'white' : 'var(--brand-blue)'} stroke="rgba(15,23,42,0.95)" strokeWidth="2" /><rect x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 202 : x(hoverIndex) + 10} y={padding.top + 8} width="192" height={hovered.type === 'Forecast' ? 74 : 52} rx="7" fill="rgba(15,23,42,0.96)" stroke="rgba(96,165,250,0.55)" /><text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 192 : x(hoverIndex) + 20} y={padding.top + 27} fill="rgba(255,255,255,0.62)" fontSize="10.5">{new Date(hovered.time).toLocaleString()} · {hovered.type}</text><text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 192 : x(hoverIndex) + 20} y={padding.top + 46} fill="white" fontSize="12" fontWeight="700">Price {hovered.price.toFixed(2)}</text>{hovered.type === 'Forecast' && <text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 192 : x(hoverIndex) + 20} y={padding.top + 64} fill="rgba(96,165,250,0.9)" fontSize="10.5">80% band {hovered.lower.toFixed(2)} – {hovered.upper.toFixed(2)}</text>}</g>}
+            </svg>
+            <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.72rem', opacity: 0.7 }}>
+                <span>Latest {Number(pattern.inputs?.latest_close).toFixed(2)}</span>
+                <span>SMA20 {Number(pattern.inputs?.sma20).toFixed(2)}</span>
+                <span>RSI14 {Number(pattern.inputs?.rsi14).toFixed(1)}</span>
+                <span>Vol/bar {Number(pattern.inputs?.per_bar_volatility_pct).toFixed(2)}%</span>
+                <span>{pattern.lookback_used} bars used</span>
+            </div>
+            {pattern.scenario_label && <div style={{ marginTop: '0.55rem', fontSize: '0.7rem', opacity: 0.75 }}><strong>Mode:</strong> {pattern.scenario_label}{pattern.llm_model ? ` · ${pattern.llm_model}` : ''}</div>}
+            {showLevels && technicalLevels.previous_low && <div style={{ marginTop: '0.4rem', fontSize: '0.68rem', opacity: 0.72 }}><strong>Previous confirmed low:</strong> {Number(technicalLevels.previous_low.price).toFixed(2)} ({technicalLevels.previous_low.bars_ago} bars ago). {technicalLevels.trend_support && <>Support anchors: {new Date(technicalLevels.trend_support.anchor_1?.time).toLocaleString()} at {Number(technicalLevels.trend_support.anchor_1?.price).toFixed(2)} → {new Date(technicalLevels.trend_support.anchor_2?.time).toLocaleString()} at {Number(technicalLevels.trend_support.anchor_2?.price).toFixed(2)} · {technicalLevels.trend_support.touches} touches · {technicalLevels.trend_support.confidence} confidence.</>}</div>}
+            {showLevels && ((technicalLevels.trend_support_candidates || []).length > 0 || (technicalLevels.trend_resistance_candidates || []).length > 0) && <details style={{ marginTop: '0.55rem', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, padding: '0.5rem 0.6rem' }}><summary style={{ cursor: 'pointer', fontSize: '0.7rem', fontWeight: 800 }}>Nearby slope candidates ({(technicalLevels.trend_support_candidates || []).length} support · {(technicalLevels.trend_resistance_candidates || []).length} resistance)</summary><div style={{ marginTop: '0.55rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(225px, 1fr))', gap: '0.45rem' }}>{[...(technicalLevels.trend_support_candidates || []), ...(technicalLevels.trend_resistance_candidates || [])].map((line, index) => <div key={`${line.kind}-${index}`} style={{ padding: '0.5rem 0.6rem', borderRadius: 6, background: line.kind === 'support' ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)', fontSize: '0.67rem', lineHeight: 1.45 }} title={`${new Date(line.anchor_1?.time).toLocaleString()} ${line.anchor_1?.price} → ${new Date(line.anchor_2?.time).toLocaleString()} ${line.anchor_2?.price}`}><strong style={{ color: line.kind === 'support' ? 'var(--brand-green)' : 'var(--brand-red)' }}>{line.kind} · {line.confidence}</strong><div>Now {Number(line.current_price).toFixed(2)} · {Number(line.distance_pct) >= 0 ? '+' : ''}{Number(line.distance_pct).toFixed(2)}% away</div><div>Slope {Number(line.slope_per_bar).toFixed(4)}/bar · {line.touches} touches · {line.violations} violations</div><div style={{ opacity: 0.55 }}>{new Date(line.anchor_1?.time).toLocaleString()} → {new Date(line.anchor_2?.time).toLocaleString()}</div></div>)}</div></details>}
+            {pattern.llm_rationale && <div style={{ marginTop: '0.45rem', padding: '0.55rem 0.65rem', background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.16)', borderRadius: 6, fontSize: '0.72rem' }}>{pattern.llm_regime && <><strong>Regime:</strong> {pattern.llm_regime}. </>}<strong>AI scenario:</strong> {pattern.llm_rationale}{pattern.llm_invalidation ? ` Invalidation: ${pattern.llm_invalidation}` : ''}</div>}
+            <p style={{ margin: '0.65rem 0 0', fontSize: '0.68rem', opacity: 0.5 }}>{pattern.warning}</p>
+        </div>
+    );
+});
+
 const normalizeProvider = (provider) => {
     const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
     if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
@@ -119,7 +416,7 @@ const readStoredAssistantConfig = () => {
 const WELCOME_MSG = (id) => ({
     id: `init-${id}`,
     type: 'bot',
-    content: "Hi, I'm your TradingSpy assistant.\n\nTry these agent checks:\n\n1. \"Generate until it beats buy and hold for QQQ. Use daily candles.\"\n2. \"Improve EMA_Trend for QQQ using daily candles. Generate until it beats EMA_Trend.\"\n3. \"Generate a strict RSI + volume + breakout strategy for QQQ daily, but reject anything with zero trades.\"\n4. \"Deep dive CRWD: product growth, latest catalysts, insiders, valuation, technicals, and bull/bear case.\"\n5. After a run accepts a strategy, click Continue to make the next run beat the accepted version.\n\nBest smoke test: \"Improve EMA_Trend for QQQ using daily candles. Generate until it beats EMA_Trend, not buy and hold.\"\n\nI can read market breadth, industry heatmaps, news, fundamentals, insider trades, company/product context, charts, local datasets, strategy code, and backtest history.",
+    content: "Hi, I'm your TradingSpy assistant.\n\nI can help with market briefs and industry movers; live quotes, charts, candles and technical signals; news, fundamentals, earnings, options and insider activity; expected-pattern scenarios with CSV export; public web and paper research; dataset downloads; strategy generation and editing; backtesting, buy-and-hold comparison and iterative optimization.\n\nExpected patterns are statistical scenarios—not guaranteed prices. Strategy and performance claims are checked against actual tool results whenever possible.\n\nChoose a starter below to place it in the input, then edit any ticker, timeframe, horizon or rules before sending.",
     timestamp: new Date().toISOString(),
 });
 
@@ -233,6 +530,14 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const [shareUrl, setShareUrl] = useState('');
     const [shareLoading, setShareLoading] = useState(false);
     const [shareError, setShareError] = useState('');
+    const [suggestedPrompts, setSuggestedPrompts] = useState(() => {
+        try {
+            const saved = JSON.parse(localStorage.getItem('assistant_suggested_prompts') || 'null');
+            return Array.isArray(saved) && saved.length ? saved : DEFAULT_SUGGESTED_PROMPTS;
+        } catch { return DEFAULT_SUGGESTED_PROMPTS; }
+    });
+    const [suggestionEditorOpen, setSuggestionEditorOpen] = useState(false);
+    const [suggestionDrafts, setSuggestionDrafts] = useState([]);
     const [limitToFourLines, setLimitToFourLines] = useState(false);
     const [apiPanelOpen, setApiPanelOpen] = useState(false);
     const [showApiKey, setShowApiKey] = useState(false);
@@ -775,7 +1080,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     };
 
     const createThread = (title = 'New Chat') => {
-        const t = newThread(title);
+        const safeTitle = typeof title === 'string' && title.trim() ? title.trim() : 'New Chat';
+        const t = newThread(safeTitle);
         setThreadState(prev => ({ activeId: t.id, threads: [t, ...prev.threads] }));
         return t.id;
     };
@@ -1475,6 +1781,31 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         }
     };
 
+    const useSuggestedPrompt = (prompt) => {
+        setInput(prompt);
+        setInputHistoryIndex(null);
+        setInputHistoryDraft('');
+        requestAnimationFrame(() => mainInputRef.current?.focus());
+    };
+
+    const openSuggestionEditor = () => {
+        setSuggestionDrafts([...suggestedPrompts]);
+        setSuggestionEditorOpen(true);
+    };
+
+    const saveSuggestedPrompts = () => {
+        const cleaned = suggestionDrafts.map(value => String(value || '').trim()).filter(Boolean).slice(0, 12);
+        const next = cleaned.length ? cleaned : DEFAULT_SUGGESTED_PROMPTS;
+        setSuggestedPrompts(next);
+        localStorage.setItem('assistant_suggested_prompts', JSON.stringify(next));
+        setSuggestionEditorOpen(false);
+        notify?.('Assistant starter prompts saved.', 'green');
+    };
+
+    const resetSuggestedPrompts = () => {
+        setSuggestionDrafts([...DEFAULT_SUGGESTED_PROMPTS]);
+    };
+
     const getMaxTokens = () => {
         const lengths = { short: 2048, mid: 8192, long: 16384 };
         return lengths[responseLength] || 8192;
@@ -1662,7 +1993,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 toolData = [];
                                 for (const [toolName, result] of Object.entries(rawToolData)) {
                                     // Check if result has chart data
-                                    if (result?.type === 'chart' && result?.data) {
+                                    if ((result?.type === 'chart' && result?.data) || (result?.type === 'expected_pattern' && result?.forecast)) {
                                         toolData.push(result);
                                     }
                                 }
@@ -2319,6 +2650,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 const last = item.data?.[item.data.length - 1]?.date || item.data?.[item.data.length - 1]?.Date || '';
                 return `chart:${item.symbol || 'unknown'}:${item.data?.length || 0}:${first}:${last}`;
             }
+            if (item.type === 'expected_pattern') return `expected:${item.symbol || 'unknown'}:${item.interval || ''}:${item.as_of || ''}`;
             return `${item.type || 'data'}:${item.symbol || item.ticker || i}`;
         };
         return (
@@ -2332,6 +2664,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                         console.log(`Rendering MiniChart for ${item.symbol} with ${item.data?.length} bars`);
                         return <MiniChart key={key} symbol={item.symbol} bars={item.data} />;
                     }
+                    if (item.type === 'expected_pattern') return <ExpectedPatternCard key={key} data={item} />;
                     if (item.type === 'news') return <NewsCard key={key} items={item.data} />;
                     if (item.type === 'full') return (
                         <div key={key}>
@@ -3507,7 +3840,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 {/* sidebar header */}
                 <div style={{ padding: '1rem', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ fontWeight: 700, fontSize: '0.85rem', opacity: 0.7, letterSpacing: '0.05em' }}>CHATS</span>
-                    <button className="btn btn-ghost btn-xs" onClick={createThread} title="New chat" style={{ padding: '0.3rem' }}>
+                    <button className="btn btn-ghost btn-xs" onClick={() => createThread()} title="New chat" style={{ padding: '0.3rem' }}>
                         <Plus size={15} />
                     </button>
                 </div>
@@ -3987,13 +4320,67 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                         )}
                                         {message.content && (
                                             <div style={{ fontSize: '0.95rem', lineHeight: 1.6, whiteSpace: assistantMessage ? 'normal' : 'pre-wrap' }}>
-                                                {assistantMessage ? renderMarkdown(message.content) : message.content}
+                                                {assistantMessage
+                                                    ? renderMarkdown(String(message.id || '').startsWith('init-') ? WELCOME_MSG(activeThread.id).content : message.content)
+                                                    : message.content}
                                                 {message.agentRun && <AgentRunCard run={message.agentRun} />}
                                                 {message.usage && (
                                                     <div style={{ marginTop: '0.65rem', paddingTop: '0.45rem', borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: '0.68rem', opacity: 0.45, display: 'flex', gap: '1rem' }}>
                                                         <span>In: {message.usage.prompt_tokens?.toLocaleString() || '?'}</span>
                                                         <span>Out: {message.usage.completion_tokens?.toLocaleString() || '?'}</span>
                                                         <span>Total: {message.usage.total_tokens?.toLocaleString() || '?'}</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        {String(message.id || '').startsWith('init-') && (
+                                            <div style={{ marginTop: '1rem', paddingTop: '0.85rem', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem', marginBottom: '0.65rem' }}>
+                                                    <div>
+                                                        <div style={{ fontSize: '0.78rem', fontWeight: 800 }}>Starter programs</div>
+                                                        <div style={{ fontSize: '0.68rem', opacity: 0.5 }}>Click to place one in the input, then edit before sending.</div>
+                                                    </div>
+                                                    <button className="btn btn-ghost btn-xs" onClick={openSuggestionEditor}>
+                                                        <Edit2 size={12} /> Edit list
+                                                    </button>
+                                                </div>
+                                                <div style={{ display: 'grid', gap: '0.45rem' }}>
+                                                    {suggestedPrompts.map((prompt, index) => (
+                                                        <button
+                                                            key={`${index}-${prompt.slice(0, 24)}`}
+                                                            type="button"
+                                                            onClick={() => useSuggestedPrompt(prompt)}
+                                                            style={{ border: '1px solid rgba(96,165,250,0.2)', background: 'rgba(59,130,246,0.06)', color: 'inherit', borderRadius: 7, padding: '0.55rem 0.65rem', textAlign: 'left', cursor: 'pointer', fontSize: '0.75rem', lineHeight: 1.4 }}
+                                                        >
+                                                            <span style={{ color: 'var(--brand-blue)', fontWeight: 800, marginRight: '0.45rem' }}>{index + 1}.</span>{prompt}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                {suggestionEditorOpen && (
+                                                    <div className="terminal-card" style={{ marginTop: '0.75rem', padding: '0.75rem', border: '1px solid rgba(96,165,250,0.3)' }}>
+                                                        <div style={{ fontSize: '0.76rem', fontWeight: 800, marginBottom: '0.55rem' }}>Edit starter programs</div>
+                                                        <div style={{ display: 'grid', gap: '0.5rem' }}>
+                                                            {suggestionDrafts.map((prompt, index) => (
+                                                                <div key={index} style={{ display: 'flex', gap: '0.4rem', alignItems: 'flex-start' }}>
+                                                                    <textarea
+                                                                        className="input"
+                                                                        value={prompt}
+                                                                        onChange={event => setSuggestionDrafts(values => values.map((value, itemIndex) => itemIndex === index ? event.target.value : value))}
+                                                                        rows={2}
+                                                                        style={{ flex: 1, resize: 'vertical', fontSize: '0.73rem', lineHeight: 1.35 }}
+                                                                    />
+                                                                    <button className="btn btn-ghost btn-xs" onClick={() => setSuggestionDrafts(values => values.filter((_, itemIndex) => itemIndex !== index))} title="Remove prompt">
+                                                                        <Trash2 size={12} />
+                                                                    </button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                        <div style={{ display: 'flex', gap: '0.45rem', marginTop: '0.65rem', flexWrap: 'wrap' }}>
+                                                            <button className="btn btn-ghost btn-xs" onClick={() => setSuggestionDrafts(values => [...values, ''])} disabled={suggestionDrafts.length >= 12}><Plus size={12} /> Add</button>
+                                                            <button className="btn btn-ghost btn-xs" onClick={resetSuggestedPrompts}>Reset defaults</button>
+                                                            <button className="btn btn-ghost btn-xs" onClick={() => setSuggestionEditorOpen(false)} style={{ marginLeft: 'auto' }}>Cancel</button>
+                                                            <button className="btn btn-primary btn-xs" onClick={saveSuggestedPrompts}><Check size={12} /> Save</button>
+                                                        </div>
                                                     </div>
                                                 )}
                                             </div>
