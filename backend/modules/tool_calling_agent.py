@@ -6,6 +6,7 @@ Standalone module that doesn't depend on backtrader
 from langchain_core.tools import tool
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import logging
 import time
 import math
@@ -621,6 +622,7 @@ def _get_technicals_cached(ticker: str) -> dict:
             close = hist["Close"]
             sma20 = close.rolling(20).mean().iloc[-1] if len(close) >= 20 else None
             sma50 = close.rolling(50).mean().iloc[-1] if len(close) >= 50 else None
+            sma200 = close.rolling(200).mean().iloc[-1] if len(close) >= 200 else None
             delta = close.diff()
             gain = delta.where(delta > 0, 0).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -634,16 +636,30 @@ def _get_technicals_cached(ticker: str) -> dict:
                 elif price < float(sma20) < float(sma50):
                     trend = "bearish"
             
-            return {
+            # Horizontal support/resistance (last 20 bars)
+            horizontal_support = round(float(close.tail(20).min()), 2)
+            horizontal_resistance = round(float(close.tail(20).max()), 2)
+            
+            # Trendline support/resistance (slope-based)
+            trendlines = _calculate_trendlines(hist, price)
+            
+            result = {
                 "symbol": ticker,
                 "price": round(price, 2),
                 "rsi_14": round(float(rsi), 2) if rsi and not pd.isna(rsi) else None,
                 "sma_20": round(float(sma20), 2) if sma20 and not pd.isna(sma20) else None,
                 "sma_50": round(float(sma50), 2) if sma50 and not pd.isna(sma50) else None,
+                "sma_200": round(float(sma200), 2) if sma200 and not pd.isna(sma200) else None,
                 "trend": trend,
-                "support": round(float(close.tail(20).min()), 2),
-                "resistance": round(float(close.tail(20).max()), 2),
+                "support": horizontal_support,
+                "resistance": horizontal_resistance,
             }
+            
+            # Add trendlines if found
+            if trendlines:
+                result.update(trendlines)
+            
+            return result
         except Exception as e:
             if attempt < 2:
                 logger.warning(f"get_technicals attempt {attempt+1} failed, retrying...")
@@ -651,6 +667,62 @@ def _get_technicals_cached(ticker: str) -> dict:
             else:
                 logger.error(f"get_technicals failed: {e}")
                 return {"symbol": ticker, "error": "Rate limited or no data"}
+
+
+def _calculate_trendlines(hist, current_price):
+    """Calculate slope-based trendline support/resistance"""
+    try:
+        if len(hist) < 40:
+            return None
+        
+        lows = hist["Low"].astype(float).to_numpy()
+        highs = hist["High"].astype(float).to_numpy()
+        close = hist["Close"].astype(float)
+        
+        # Find pivot points (simple version - local min/max over 3-bar window)
+        radius = 3
+        pivot_lows = [i for i in range(radius, len(hist) - radius) 
+                      if lows[i] <= np.min(lows[i - radius:i + radius + 1])]
+        pivot_highs = [i for i in range(radius, len(hist) - radius) 
+                       if highs[i] >= np.max(highs[i - radius:i + radius + 1])]
+        
+        # Take recent pivots only
+        recent_lows = pivot_lows[-6:] if len(pivot_lows) > 0 else []
+        recent_highs = pivot_highs[-6:] if len(pivot_highs) > 0 else []
+        
+        trendlines = {}
+        
+        # Support trendline (connect rising lows)
+        if len(recent_lows) >= 2:
+            # Take last 2 pivot lows
+            idx1, idx2 = recent_lows[-2], recent_lows[-1]
+            if idx2 > idx1:
+                slope = (lows[idx2] - lows[idx1]) / (idx2 - idx1)
+                # Project to current bar
+                projected_support = lows[idx1] + slope * (len(hist) - 1 - idx1)
+                
+                trendlines["trend_support"] = round(float(projected_support), 2)
+                trendlines["trend_support_slope"] = "rising" if slope > 0 else "falling"
+                trendlines["trend_support_distance_pct"] = round((projected_support / current_price - 1) * 100, 2)
+        
+        # Resistance trendline (connect declining highs)  
+        if len(recent_highs) >= 2:
+            # Take last 2 pivot highs
+            idx1, idx2 = recent_highs[-2], recent_highs[-1]
+            if idx2 > idx1:
+                slope = (highs[idx2] - highs[idx1]) / (idx2 - idx1)
+                # Project to current bar
+                projected_resistance = highs[idx1] + slope * (len(hist) - 1 - idx1)
+                
+                trendlines["trend_resistance"] = round(float(projected_resistance), 2)
+                trendlines["trend_resistance_slope"] = "rising" if slope > 0 else "falling"
+                trendlines["trend_resistance_distance_pct"] = round((projected_resistance / current_price - 1) * 100, 2)
+        
+        return trendlines if trendlines else None
+        
+    except Exception as e:
+        logger.warning(f"Trendline calculation failed: {e}")
+        return None
 
 
 @tool
@@ -1956,6 +2028,24 @@ Keep responses concise and natural.
 - For optimization/improvement requests, iterate deliberately: baseline current version, generate candidate, backtest candidate, accept only if it improves the chosen metric, otherwise keep the old version and explain what failed.
 - If the user requests infinite-loop improvement, confirm stop rules unless explicitly provided. Use checkpoints: max rounds, no-improvement streak, benchmark vs buy-and-hold, and user approval to keep going.
 - Don't keep asking "Would you like a scan?" if you've already scanned - just DO IT or admit the market is tough
+
+🔁 ITERATIVE "DO X UNTIL Y" REQUESTS:
+- When user says "find X until you succeed", "keep trying until", "do X until Y works" - **TAKE ACTION IMMEDIATELY**
+- Example: "find a bullish one until you can find it" → Call scan_bullish_patterns immediately, don't ask which ticker
+- **DO NOT ask clarifying questions** for iterative requests - infer reasonable defaults and scan
+- If first scan returns nothing, try different intervals/universes automatically
+- Report what you tried and results, then try again if needed
+- Only stop when: (1) you succeed, (2) you've tried 3+ approaches, or (3) user says stop
+- **NEVER ask "which ticker?" when user wants you to FIND tickers** - that's the whole point!
+
+💬 FOLLOW-UP OPINION QUESTIONS:
+- When user asks "is it a good time to buy?", "should I buy?", "what do you think?" RIGHT AFTER you analyzed a stock - **DO NOT call new tools**
+- You already have the data from the previous analysis - **SYNTHESIZE an opinion from that data**
+- Structure your answer: Current Setup → Bull Case → Bear Case → Verdict (Buy/Wait/Pass)
+- Example: If you just analyzed MSFT and user asks "should I buy?":
+  - ✅ RIGHT: Use the fundamentals, technicals, trend you just fetched → Give buy/wait/pass opinion
+  - ❌ WRONG: Call screen_industry_insider_activity or other irrelevant tools
+- Only call new tools if user asks for NEW information (earnings, news, insider activity explicitly)
 
 🧠 REACT REASONING STYLE:
 When analyzing requests, think through your approach explicitly:

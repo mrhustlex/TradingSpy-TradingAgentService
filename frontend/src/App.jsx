@@ -269,6 +269,36 @@ const App = () => {
     }
   };
 
+  const stopAllRunningAgents = async () => {
+    if (!window.confirm('Stop all running agents? This cannot be undone.')) return;
+    const runningAgents = agentRuns.filter(run => !isAgentTerminal(run.status));
+    if (runningAgents.length === 0) {
+      notify('No running agents to stop', 'yellow');
+      return;
+    }
+    
+    const stoppedAt = new Date().toISOString();
+    setAgentRuns(prev => prev.map(run => 
+      !isAgentTerminal(run.status) 
+        ? { ...run, status: 'stopped', current_step: 'Stop requested (batch)', updated_at: stoppedAt }
+        : run
+    ));
+    
+    let stopped = 0;
+    let failed = 0;
+    for (const run of runningAgents) {
+      try {
+        await axios.post(`${API_BASE}/agent/runs/${run.run_id}/stop`);
+        stopped += 1;
+      } catch (e) {
+        failed += 1;
+      }
+    }
+    
+    await fetchAgentRuns();
+    notify(`Stopped ${stopped} agent(s)${failed > 0 ? `, ${failed} failed` : ''}`, stopped > 0 ? 'green' : 'red');
+  };
+
   const deleteAgentRun = async (runId) => {
     if (!runId) return;
     setAgentRuns(prev => prev.filter(run => run.run_id !== runId));
@@ -485,6 +515,58 @@ const App = () => {
       )}
 
       <main className={`main-content ${activeTab === 'chat' ? 'main-content--chat' : ''}`} style={activeTab === 'chat' ? { padding: 0, overflow: 'hidden' } : {}}>
+        {/* SearXNG Warning Banner */}
+        {searxngAvailable === false && !searxngWarningDismissed && (
+          <div style={{
+            background: 'rgba(234, 179, 8, 0.15)',
+            border: '1px solid var(--brand-yellow)',
+            borderRadius: '8px',
+            padding: '1rem 1.25rem',
+            marginBottom: '1.5rem',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '1rem'
+          }}>
+            <AlertCircle size={20} color="var(--brand-yellow)" style={{ flexShrink: 0, marginTop: '0.1rem' }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, color: 'var(--brand-yellow)', marginBottom: '0.5rem' }}>
+                SearXNG Search Service Not Available
+              </div>
+              <div style={{ fontSize: '0.85rem', opacity: 0.9, marginBottom: '0.75rem' }}>
+                Some features like <strong>Web Research</strong>, <strong>News Search</strong>, and <strong>Assistant web searches</strong> may not work properly without SearXNG.
+              </div>
+              <div style={{ fontSize: '0.8rem', opacity: 0.8, marginBottom: '0.75rem' }}>
+                <strong>To enable SearXNG:</strong>
+                <ul style={{ marginTop: '0.35rem', marginLeft: '1.25rem', marginBottom: 0 }}>
+                  <li>Run: <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0.15rem 0.4rem', borderRadius: '4px' }}>docker compose up -d searxng</code></li>
+                  <li>Or configure <code style={{ background: 'rgba(0,0,0,0.3)', padding: '0.15rem 0.4rem', borderRadius: '4px' }}>SEARXNG_URL</code> in Settings if running separately</li>
+                </ul>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <button
+                  className="btn btn-xs"
+                  onClick={() => {
+                    window.location.reload();
+                  }}
+                  style={{ fontSize: '0.7rem', padding: '0.35rem 0.75rem' }}
+                >
+                  <RefreshCw size={12} /> Check Again
+                </button>
+                <button
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => {
+                    setSearxngWarningDismissed(true);
+                    localStorage.setItem('searxng_warning_dismissed', 'true');
+                  }}
+                  style={{ fontSize: '0.7rem', padding: '0.35rem 0.75rem', opacity: 0.7 }}
+                >
+                  <X size={12} /> Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        
         <div hidden={activeTab !== 'studio'}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             <AIStrategyStudio
@@ -727,16 +809,28 @@ const App = () => {
           >
             <div style={{ padding: '0.35rem 0.55rem 0.15rem', fontSize: '0.62rem', fontWeight: 800, opacity: 0.5, letterSpacing: 0.4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>ASSISTANT AGENTS</span>
-              {agentRuns.some(run => isAgentTerminal(run.status)) && (
-                <button
-                  className="btn btn-ghost btn-xs"
-                  title="Clear all completed agents"
-                  onClick={clearTerminalAgentRuns}
-                  style={{ padding: '0.1rem', opacity: 0.6 }}
-                >
-                  <Trash2 size={10} />
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: '0.3rem' }}>
+                {agentRuns.some(run => !isAgentTerminal(run.status)) && (
+                  <button
+                    className="btn btn-ghost btn-xs"
+                    title="Stop all running agents"
+                    onClick={stopAllRunningAgents}
+                    style={{ padding: '0.1rem', opacity: 0.7, color: 'var(--brand-red)' }}
+                  >
+                    <Square size={10} />
+                  </button>
+                )}
+                {agentRuns.some(run => isAgentTerminal(run.status)) && (
+                  <button
+                    className="btn btn-ghost btn-xs"
+                    title="Clear all completed agents"
+                    onClick={clearTerminalAgentRuns}
+                    style={{ padding: '0.1rem', opacity: 0.6 }}
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                )}
+              </div>
             </div>
             {agentMonitorError && (
               <div className="task-item" style={{ color: 'var(--brand-yellow)' }}>{agentMonitorError}</div>

@@ -7559,6 +7559,26 @@ async def update_settings(settings: SystemSettings):
         logger.error(f"Failed to save settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/settings/search-health")
+async def get_search_health():
+    """Check if SearXNG is reachable for web/news search features."""
+    import requests
+    try:
+        base_url = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+        response = requests.get(f"{base_url}/healthz", timeout=2)
+        searxng_reachable = response.status_code == 200
+        return {
+            "searxng_reachable": searxng_reachable,
+            "searxng_url": base_url,
+            "message": "SearXNG is active" if searxng_reachable else "SearXNG did not respond"
+        }
+    except Exception as e:
+        return {
+            "searxng_reachable": False,
+            "searxng_url": os.getenv("SEARXNG_URL", "http://localhost:8080"),
+            "message": f"SearXNG unavailable: {str(e)}"
+        }
+
 @app.post("/api/chat/share")
 async def share_chat_thread(request: ShareChatRequest):
     """Create a shareable link for a chat thread"""

@@ -2087,6 +2087,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             updateMessage(threadId, msgId, '❌ Sorry, I encountered an error. Please try again or check your API key in Settings.');
         } finally {
             updateThreadStreamState(threadId, { isStreaming: false, streamingMessage: '', abortController: null, currentStreamingId: null, agentProgress: null, confirmRequest: null, liveCommentary: [] });
+            // NOTE: Do NOT clear pendingAgentRequest here - it's needed to handle clarification responses
         }
     };
 
@@ -2508,13 +2509,41 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     const steerQueuedInput = () => {
         if (!queuedInput) return;
-        setInput(queuedInput);
-        updateThreadStreamState(activeThread.id, { queuedInput: null });
-        requestAnimationFrame(() => {
-            mainInputRef.current?.focus?.();
-            const length = queuedInput.length;
-            mainInputRef.current?.setSelectionRange?.(length, length);
+        
+        // Get current streaming state
+        const ts = getThreadState(activeThread.id);
+        const wasGenerating = ts.isStreaming;
+        
+        // Abort current generation
+        if (ts.abortController) {
+            ts.abortController.abort();
+        }
+        
+        // Update state to show interruption
+        updateThreadStreamState(activeThread.id, { 
+            isStreaming: false, 
+            streamingMessage: '', 
+            abortController: null,
+            queuedInput: null 
         });
+        
+        // Mark the interrupted message
+        if (ts.currentStreamingId) {
+            updateMessage(activeThread.id, ts.currentStreamingId, '⚠️ Response interrupted by steering.');
+        }
+        
+        // Send the steering message immediately with context
+        const steeringMessage = wasGenerating 
+            ? `[Steering] ${queuedInput}` 
+            : queuedInput;
+        
+        // Small delay to let abort complete
+        setTimeout(() => {
+            submitUserMessage(steeringMessage, { 
+                clearInput: true,
+                allowQueue: false 
+            });
+        }, 100);
     };
 
     const startQueuedInputInNewThread = () => {
@@ -4626,7 +4655,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 <button className="btn btn-ghost btn-xs" onClick={startQueuedInputInNewThread} title="Start queued message in another thread" style={{ padding: '0.25rem 0.45rem' }}>
                                     <Plus size={12} /> New thread
                                 </button>
-                                <button className="btn btn-ghost btn-xs" onClick={steerQueuedInput} title="Move queued message back into the input so you can edit it" style={{ padding: '0.25rem 0.45rem' }}>
+                                <button className="btn btn-ghost btn-xs" onClick={steerQueuedInput} title="Stop current response and send this message immediately" style={{ padding: '0.25rem 0.45rem' }}>
                                     <Edit2 size={12} /> Steer
                                 </button>
                                 <button className="btn btn-ghost btn-xs" onClick={cancelQueuedInput} title="Cancel queued message" style={{ padding: '0.25rem 0.35rem' }}>
