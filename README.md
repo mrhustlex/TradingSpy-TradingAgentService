@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/images/banner.svg" alt="TradingSpy" width="100%"/>
-</p>
+## Trading Spy
 
 > Local-first AI trading research: market heatmaps, news catalysts, strategy generation, Backtrader backtests, and transparent agent runs in one Docker app.
 
