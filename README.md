@@ -170,7 +170,7 @@ Keys may be stored in `.env`/`backend/.env` or entered in the app's Settings pag
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/mrhustlex/TradingSpy.git
+git clone https://github.com/mrhustlex/TradingSpy-TradingAgentService.git
 cd TradingSpy
 cp .env.example .env
 ```
