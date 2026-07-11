@@ -17,17 +17,21 @@ def _interval(value: str) -> str:
 
 
 def _convert_numpy_types(obj):
-    """Recursively convert numpy types to native Python types for JSON serialization."""
+    """Recursively convert numpy and pandas types to native Python types for JSON serialization."""
     if isinstance(obj, dict):
         return {key: _convert_numpy_types(value) for key, value in obj.items()}
     elif isinstance(obj, list):
         return [_convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, (pd.Timestamp, pd.DatetimeTZDtype)):
+        return obj.isoformat() if hasattr(obj, 'isoformat') else str(obj)
     elif isinstance(obj, np.integer):
         return int(obj)
     elif isinstance(obj, np.floating):
         return float(obj)
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
+    elif pd.isna(obj):
+        return None
     return obj
 
 
@@ -49,7 +53,7 @@ def generate_expected_pattern(
     Args:
         ticker: Market symbol, for example SPY, NVDA, BTC-USD, or EURUSD=X.
         interval: Candle interval such as 5m, 15m, 1h, 1d, or 1wk.
-        horizon: Future bars to project, from 2 to 250.
+        horizon: Future bars to project, from 2 to 500.
         lookback: Recent bars used for estimation, from 40 to 500.
         extended_hours: Include pre/post-market bars for intraday equities.
     """
@@ -57,7 +61,7 @@ def generate_expected_pattern(
     if not symbol:
         return {"error": "ticker is required"}
     interval = _interval(interval)
-    horizon = max(2, min(int(horizon or 20), 250))
+    horizon = max(2, min(int(horizon or 20), 500))
     lookback = max(40, min(int(lookback or 180), 500))
     periods = {
         "1m": "7d", "2m": "60d", "5m": "60d", "15m": "60d", "30m": "60d",
@@ -264,6 +268,25 @@ def generate_expected_pattern(
             previous_low = {"time": timestamp(frame.index[position]), "price": round(float(lows[position]), 4), "bars_ago": len(frame) - 1 - position}
         support_candidates = ranked_pivot_lines(pivot_lows, lows, "support")
         resistance_candidates = ranked_pivot_lines(pivot_highs, highs, "resistance")
+        
+        # Add points array to candidates for frontend rendering
+        def add_candidate_points(candidates, values):
+            start_position = max(0, len(frame) - 80)
+            positions = list(range(start_position, len(frame) + horizon))
+            times_list = [timestamp(value) for value in frame.index[start_position:]] + future_times
+            for candidate in candidates:
+                anchor_time = candidate["anchor_1"]["time"]
+                first_position = next((idx for idx, t in enumerate(frame.index) if timestamp(t) == anchor_time), 0)
+                points = [
+                    {"time": time_value, "price": round(candidate["anchor_1"]["price"] + candidate["slope_per_bar"] * (position - first_position), 4)}
+                    for position, time_value in zip(positions, times_list)
+                ]
+                candidate["points"] = points
+            return candidates
+        
+        support_candidates = add_candidate_points(support_candidates, lows)
+        resistance_candidates = add_candidate_points(resistance_candidates, highs)
+        
         technical_levels = {
             "atr14": round(atr14, 4),
             "tolerance": round(level_tolerance, 4),
@@ -293,6 +316,18 @@ def generate_expected_pattern(
         avg_loss = float(-changes.clip(upper=0).tail(14).mean())
         rsi14 = 100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
 
+        # Create user-friendly explanation
+        explanation = (
+            f"This forecast uses a statistical calculation based on {len(frame)} historical bars. "
+            f"It combines recent momentum (weighted toward the most recent data), trend direction "
+            f"from the last 30 bars, mean reversion from the 20-bar average, and volume confirmation. "
+            f"The path is generated using Monte Carlo simulation with 1,200 scenarios, sampling from "
+            f"actual historical price movements. The median path represents the most likely outcome, "
+            f"while the 80% confidence band shows the range where prices are statistically likely to fall. "
+            f"Current indicators: RSI={round(rsi14, 1)}, Recent Volume vs Average={round(volume_ratio, 2)}x, "
+            f"Volatility={round(volatility * 100, 2)}% per bar."
+        )
+        
         return _convert_numpy_types({
             "type": "expected_pattern", "symbol": symbol, "interval": interval,
             "horizon": horizon, "lookback_used": len(frame), "as_of": timestamp(frame.index[-1]),
@@ -304,6 +339,7 @@ def generate_expected_pattern(
                        "rsi14": round(rsi14, 2), "per_bar_volatility_pct": round(volatility * 100, 3),
                        "recent_volume_ratio": round(volume_ratio, 3), "bars": len(frame)},
             "method": "Seeded residual bootstrap using momentum, log-price trend, mean reversion, volume confirmation, and empirical volatility.",
+            "explanation": explanation,
             "csv_columns": ["step", "time", "expected_close", "lower_80", "upper_80", "expected_return_pct"],
             "csv_rows": forecast,
             "warning": "Probabilistic historical-data scenario, not financial advice or a guaranteed price forecast. The 80% band represents model uncertainty.",

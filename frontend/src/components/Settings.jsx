@@ -11,6 +11,7 @@ const SUPPORTED_PROVIDERS = [
     { value: 'google_ai_studio', label: 'Google AI Studio' },
     { value: 'mistral', label: 'Mistral AI' },
     { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'nvidia', label: 'NVIDIA' },
     { value: 'litellm', label: 'LiteLLM' },
     { value: 'ollama', label: 'Ollama (Local)' },
 ];
@@ -30,7 +31,7 @@ const isSupportedProviderInput = (provider) => {
 
 // Keys that live in localStorage only — never sent to the server
 const LS_KEY = (k) => `settings_${k}`;
-const KEY_FIELDS = ['openrouter_api_key','google_ai_studio_api_key','mistral_api_key','litellm_api_key','tavily_api_key'];
+const KEY_FIELDS = ['openrouter_api_key','google_ai_studio_api_key','mistral_api_key','nvidia_api_key','litellm_api_key','tavily_api_key'];
 const LOCAL_CONFIG_FIELDS = ['litellm_base_url', 'ollama_base_url'];
 
 function loadLocalKeys() {
@@ -61,6 +62,7 @@ const INITIAL_SETTINGS = {
     openrouter_api_key: '',
     google_ai_studio_api_key: '',
     mistral_api_key: '',
+    nvidia_api_key: '',
     litellm_api_key: '',
     litellm_base_url: 'http://localhost:4000/v1',
     ollama_base_url: '',
@@ -350,6 +352,14 @@ const Settings = ({ notify }) => {
                                 <label>Mistral AI API Key</label>
                                 <input type="password" className="input" value={settings.mistral_api_key} onChange={(e) => updateSetting('mistral_api_key', e.target.value)} placeholder={settings.mistral_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'Mistral API key'} />
                                 <ProviderKeyNote configured={settings.mistral_api_key_configured} />
+                            </div>
+                        )}
+
+                        {settings.default_provider === 'nvidia' && (
+                            <div className="form-group">
+                                <label>NVIDIA API Key</label>
+                                <input type="password" className="input" value={settings.nvidia_api_key} onChange={(e) => updateSetting('nvidia_api_key', e.target.value)} placeholder={settings.nvidia_api_key_configured ? 'Configured on server/env. Type to override locally.' : 'nvapi-...'} />
+                                <ProviderKeyNote configured={settings.nvidia_api_key_configured} />
                             </div>
                         )}
 

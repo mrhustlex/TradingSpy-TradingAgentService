@@ -1,0 +1,14 @@
+{
+  "name": "tradingspy",
+  "private": true,
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:searxng": "node scripts/dev-searxng.mjs",
+    "dev:searxng:docker": "docker compose -f searxng/docker-compose.yml up -d",
+    "stop:searxng": "docker compose -f searxng/docker-compose.yml down",
+    "logs:searxng": "docker compose -f searxng/docker-compose.yml logs -f searxng",
+    "health:searxng": "curl -fsS http://localhost:8080/healthz"
+  }
+}

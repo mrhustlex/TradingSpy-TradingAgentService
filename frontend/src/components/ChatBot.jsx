@@ -17,6 +17,7 @@ const API_PROVIDERS = [
     { value: 'google_ai_studio', label: 'Google AI Studio' },
     { value: 'mistral', label: 'Mistral' },
     { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'nvidia', label: 'NVIDIA' },
     { value: 'litellm', label: 'LiteLLM' },
     { value: 'ollama', label: 'Ollama (Local)' },
 ];
@@ -27,12 +28,14 @@ const API_KEY_STORAGE = {
     googleaistudio: 'settings_google_ai_studio_api_key',
     gemini: 'settings_google_ai_studio_api_key',
     mistral: 'settings_mistral_api_key',
+    nvidia: 'settings_nvidia_api_key',
     litellm: 'settings_litellm_api_key',
     ollama: 'settings_ollama_api_key',
 };
 const DEFAULT_SUGGESTED_PROMPTS = [
-    'Give me a daily market brief with breadth, strongest and weakest industries, important news, earnings, and insider activity.',
+    'Give me a daily market brief with breadth, strongest and weakest industries, important news, and earnings.',
     'Show the expected pattern for QQQ over the next 20 daily bars, including the uncertainty band and key invalidation risks.',
+    'Scan semiconductors for bullish expected patterns across 5m, 15m, and 1h intervals, then rank by best potential return.',
     'Scan NVDA and its peers using 15-minute candles, then explain whether the latest move has price and volume confirmation.',
     'Deep dive CRWD using fundamentals, valuation, technicals, products, recent catalysts, insider trades, and a bull/bear case.',
     'Generate three daily QQQ strategies, backtest all of them, compare them with buy-and-hold, and reject zero-trade results.',
@@ -166,6 +169,7 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
     const [includeAnalysis, setIncludeAnalysis] = useState(true);
     const [recalculating, setRecalculating] = useState(false);
     const [showLevels, setShowLevels] = useState(true);
+    const [showTrendlines, setShowTrendlines] = useState(false);
     const [hoverIndex, setHoverIndex] = useState(null);
     const [agentUpdate, setAgentUpdate] = useState('');
     const [scenarioError, setScenarioError] = useState('');
@@ -175,7 +179,7 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
         setHorizon(data?.horizon || 20);
         setInterval(data?.interval || '1d');
     }, [data]);
-    const horizonLimit = mode === 'calculation' ? 250 : 120;
+    const horizonLimit = mode === 'calculation' ? 500 : 250;
     const rawTargetBars = horizonMode === 'timestamp' && targetTime 
         ? estimatePatternBarsUntil(targetTime, interval) 
         : horizonMode === 'time' && timeRange
@@ -220,6 +224,9 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
     const forecastPath = expectedPoints.map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.expected_close))}`).join(' ');
     const calculationPath = forecast.some(row => row.calculation_close != null)
         ? [{ calculation_close: history[anchorIndex].close }, ...forecast].map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.calculation_close))}`).join(' ')
+        : '';
+    const llmPath = forecast.some(row => row.llm_close != null)
+        ? [{ llm_close: history[anchorIndex].close }, ...forecast].map((row, index) => `${index ? 'L' : 'M'} ${x(anchorIndex + index)} ${y(Number(row.llm_close))}`).join(' ')
         : '';
     const technicalLevels = pattern?.technical_levels || {};
     const trendPath = trend => {
@@ -288,7 +295,15 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
         ? { type: 'Actual', time: history[hoverIndex]?.time, price: Number(history[hoverIndex]?.close) }
         : (() => {
             const row = forecast[hoverIndex - history.length];
-            return row ? { type: 'Forecast', time: row.time, price: Number(row.expected_close), lower: Number(row.lower_80), upper: Number(row.upper_80) } : null;
+            return row ? {
+                type: 'Forecast',
+                time: row.time,
+                price: Number(row.expected_close),
+                lower: Number(row.lower_80),
+                upper: Number(row.upper_80),
+                calculation: row.calculation_close != null ? Number(row.calculation_close) : null,
+                llm: row.llm_close != null ? Number(row.llm_close) : null,
+            } : null;
         })();
     const handleHover = event => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -308,7 +323,7 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
                     </div>
                 </div>
                 <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                    {['calculation', 'llm', 'hybrid'].map(value => <button key={value} className={`btn btn-xs ${mode === value ? 'btn-primary' : 'btn-ghost'}`} disabled={recalculating} onClick={() => { const nextHorizon = Math.min(horizon, value === 'calculation' ? 250 : 120); setMode(value); setHorizon(nextHorizon); recalculate(value, interval, nextHorizon); }}>{value === 'llm' ? 'LLM' : value[0].toUpperCase() + value.slice(1)}</button>)}
+                    {['calculation', 'llm', 'hybrid'].map(value => <button key={value} className={`btn btn-xs ${mode === value ? 'btn-primary' : 'btn-ghost'}`} disabled={recalculating} onClick={() => { const nextHorizon = Math.min(horizon, value === 'calculation' ? 500 : 250); setMode(value); setHorizon(nextHorizon); recalculate(value, interval, nextHorizon); }}>{value === 'llm' ? 'LLM' : value[0].toUpperCase() + value.slice(1)}</button>)}
                     <select className="input" value={interval} onChange={event => { setInterval(event.target.value); setAgentUpdate(''); }} style={{ width: 'auto', padding: '0.22rem 0.35rem', fontSize: '0.68rem' }} title="Forecast candle interval">{assistantIntervals.map(value => <option key={value} value={value}>{value}</option>)}</select>
                     <select 
                         className="input" 
@@ -347,7 +362,8 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
                         <span style={{ fontSize: '0.66rem', opacity: 0.75 }}>≈ {horizon} bars</span>
                     )}
                     {mode !== 'calculation' && <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', opacity: 0.7 }} title="Concise rationale, regime, and invalidation summary—not hidden chain-of-thought"><input type="checkbox" checked={includeAnalysis} onChange={event => setIncludeAnalysis(event.target.checked)} /> AI summary</label>}
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', opacity: 0.7 }} title="Show horizontal support/resistance and scored pivot trendlines"><input type="checkbox" checked={showLevels} onChange={event => setShowLevels(event.target.checked)} /> Levels</label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', opacity: 0.7 }} title="Show horizontal support/resistance levels"><input type="checkbox" checked={showLevels} onChange={event => setShowLevels(event.target.checked)} /> Levels</label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.68rem', opacity: 0.7 }} title="Show support/resistance trendline candidates"><input type="checkbox" checked={showTrendlines} onChange={event => setShowTrendlines(event.target.checked)} /> Trendlines</label>
                     <button className="btn btn-ghost btn-xs" onClick={() => recalculate(mode, interval, horizon)} disabled={recalculating}><RefreshCw size={13} className={recalculating ? 'animate-spin' : ''} /> Generate</button>
                     <button className="btn btn-ghost btn-xs" onClick={downloadCsv}><Download size={14} /> CSV</button>
                 </div>
@@ -355,6 +371,13 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
             {horizonWarning && <div style={{ marginTop: '0.55rem', padding: '0.45rem 0.6rem', borderRadius: 6, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', color: 'var(--brand-yellow)', fontSize: '0.68rem' }}>{horizonWarning}</div>}
             {scenarioError && <div style={{ marginTop: '0.55rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.24)', color: 'rgb(248,113,113)', fontSize: '0.7rem', lineHeight: 1.45 }}><strong>Expected Pattern failed:</strong> {scenarioError}</div>}
             {agentUpdate && <div style={{ marginTop: '0.6rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.18)', fontSize: '0.72rem', lineHeight: 1.45 }}><strong>Assistant update:</strong> {agentUpdate}</div>}
+            <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap', marginTop: '0.7rem', fontSize: '0.68rem', opacity: 0.78 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, height: 2, background: 'rgba(255,255,255,0.72)' }} />Historical close</span>
+                {calculationPath && <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, borderTop: '2px dashed var(--brand-yellow)' }} />Calculation baseline</span>}
+                {llmPath && <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, borderTop: '2px dotted rgb(192,132,252)' }} />LLM path</span>}
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, height: 3, background: 'var(--brand-blue)' }} />{pattern.scenario_mode === 'hybrid' ? 'Hybrid path' : pattern.scenario_mode === 'llm' ? 'Selected LLM path' : 'Calculation path'}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}><span style={{ width: 16, height: 8, background: 'rgba(96,165,250,0.18)', border: '1px solid rgba(96,165,250,0.35)' }} />80% band</span>
+            </div>
             <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${pattern.symbol} expected price pattern`} onMouseMove={handleHover} onMouseLeave={() => setHoverIndex(null)} style={{ width: '100%', height: 'auto', marginTop: '0.65rem', cursor: 'crosshair' }}>
                 {ticks.map((value, index) => (
                     <g key={index}>
@@ -369,12 +392,27 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
                 {showLevels && technicalLevels.previous_low && <g><line x1={padding.left} x2={width - padding.right} y1={y(Number(technicalLevels.previous_low.price))} y2={y(Number(technicalLevels.previous_low.price))} stroke="rgba(52,211,153,0.85)" strokeWidth="1.5" strokeDasharray="2 4" /><text x={padding.left + 4} y={y(Number(technicalLevels.previous_low.price)) - 5} fill="rgba(52,211,153,0.95)" fontSize="9.5">Previous low {Number(technicalLevels.previous_low.price).toFixed(2)}</text></g>}
                 {showLevels && supportTrendPath && <path d={supportTrendPath} fill="none" stroke="var(--brand-green)" strokeWidth="2" strokeDasharray="7 5" opacity="0.8" />}
                 {showLevels && resistanceTrendPath && <path d={resistanceTrendPath} fill="none" stroke="var(--brand-red)" strokeWidth="2" strokeDasharray="7 5" opacity="0.8" />}
+                {showTrendlines && (technicalLevels.trend_support_candidates || []).slice(0, 3).map((candidate, index) => {
+                    const points = (candidate?.points || []).slice(-totalPoints);
+                    if (points.length !== totalPoints) return null;
+                    const path = points.map((point, idx) => `${idx ? 'L' : 'M'} ${x(idx)} ${y(Number(point.price))}`).join(' ');
+                    const opacity = candidate.confidence === 'high' ? 0.65 : candidate.confidence === 'medium' ? 0.45 : 0.30;
+                    return <path key={`support-cand-${index}`} d={path} fill="none" stroke="var(--brand-green)" strokeWidth="1.5" strokeDasharray="3 4" opacity={opacity} />;
+                })}
+                {showTrendlines && (technicalLevels.trend_resistance_candidates || []).slice(0, 3).map((candidate, index) => {
+                    const points = (candidate?.points || []).slice(-totalPoints);
+                    if (points.length !== totalPoints) return null;
+                    const path = points.map((point, idx) => `${idx ? 'L' : 'M'} ${x(idx)} ${y(Number(point.price))}`).join(' ');
+                    const opacity = candidate.confidence === 'high' ? 0.65 : candidate.confidence === 'medium' ? 0.45 : 0.30;
+                    return <path key={`resistance-cand-${index}`} d={path} fill="none" stroke="var(--brand-red)" strokeWidth="1.5" strokeDasharray="3 4" opacity={opacity} />;
+                })}
                 <path d={historyPath} fill="none" stroke="rgba(255,255,255,0.7)" strokeWidth="2" />
-                {calculationPath && <path d={calculationPath} fill="none" stroke="var(--brand-yellow)" strokeWidth="2" strokeDasharray="6 5" opacity="0.82" />}
+                {calculationPath && (pattern.scenario_mode === 'hybrid' || pattern.scenario_mode === 'llm') && <path d={calculationPath} fill="none" stroke="var(--brand-yellow)" strokeWidth="2" strokeDasharray="6 5" opacity="0.82" />}
+                {llmPath && (pattern.scenario_mode === 'hybrid' || pattern.scenario_mode === 'llm') && <path d={llmPath} fill="none" stroke="rgb(192,132,252)" strokeWidth="2" strokeDasharray="2 5" opacity="0.9" />}
                 <path d={forecastPath} fill="none" stroke="var(--brand-blue)" strokeWidth="3" />
                 <text x={x(anchorIndex) - 8} y={height - 17} fill="rgba(255,255,255,0.55)" fontSize="11" textAnchor="end">History</text>
                 <text x={x(anchorIndex) + 8} y={height - 17} fill="rgba(96,165,250,0.95)" fontSize="11">Forecast + 80% band</text>
-                {hovered && <g pointerEvents="none"><line x1={x(hoverIndex)} x2={x(hoverIndex)} y1={padding.top} y2={height - padding.bottom} stroke="rgba(255,255,255,0.48)" strokeDasharray="3 3" /><circle cx={x(hoverIndex)} cy={y(hovered.price)} r="5" fill={hovered.type === 'Actual' ? 'white' : 'var(--brand-blue)'} stroke="rgba(15,23,42,0.95)" strokeWidth="2" /><rect x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 202 : x(hoverIndex) + 10} y={padding.top + 8} width="192" height={hovered.type === 'Forecast' ? 74 : 52} rx="7" fill="rgba(15,23,42,0.96)" stroke="rgba(96,165,250,0.55)" /><text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 192 : x(hoverIndex) + 20} y={padding.top + 27} fill="rgba(255,255,255,0.62)" fontSize="10.5">{new Date(hovered.time).toLocaleString()} · {hovered.type}</text><text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 192 : x(hoverIndex) + 20} y={padding.top + 46} fill="white" fontSize="12" fontWeight="700">Price {hovered.price.toFixed(2)}</text>{hovered.type === 'Forecast' && <text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 192 : x(hoverIndex) + 20} y={padding.top + 64} fill="rgba(96,165,250,0.9)" fontSize="10.5">80% band {hovered.lower.toFixed(2)} – {hovered.upper.toFixed(2)}</text>}</g>}
+                {hovered && <g pointerEvents="none"><line x1={x(hoverIndex)} x2={x(hoverIndex)} y1={padding.top} y2={height - padding.bottom} stroke="rgba(255,255,255,0.48)" strokeDasharray="3 3" /><circle cx={x(hoverIndex)} cy={y(hovered.price)} r="5" fill={hovered.type === 'Actual' ? 'white' : 'var(--brand-blue)'} stroke="rgba(15,23,42,0.95)" strokeWidth="2" /><rect x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 218 : x(hoverIndex) + 10} y={padding.top + 8} width="208" height={hovered.type === 'Forecast' ? hovered.calculation != null || hovered.llm != null ? 112 : 74 : 52} rx="7" fill="rgba(15,23,42,0.96)" stroke="rgba(96,165,250,0.55)" /><text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 208 : x(hoverIndex) + 20} y={padding.top + 27} fill="rgba(255,255,255,0.62)" fontSize="10.5">{new Date(hovered.time).toLocaleString()} · {hovered.type}</text><text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 208 : x(hoverIndex) + 20} y={padding.top + 46} fill="white" fontSize="12" fontWeight="700">Selected {hovered.price.toFixed(2)}</text>{hovered.type === 'Forecast' && <text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 208 : x(hoverIndex) + 20} y={padding.top + 64} fill="rgba(96,165,250,0.9)" fontSize="10.5">80% band {hovered.lower.toFixed(2)} - {hovered.upper.toFixed(2)}</text>}{hovered.type === 'Forecast' && hovered.calculation != null && <text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 208 : x(hoverIndex) + 20} y={padding.top + 82} fill="var(--brand-yellow)" fontSize="10.5">Calculation {hovered.calculation.toFixed(2)}</text>}{hovered.type === 'Forecast' && hovered.llm != null && <text x={x(hoverIndex) > width * 0.72 ? x(hoverIndex) - 208 : x(hoverIndex) + 20} y={padding.top + 100} fill="rgb(216,180,254)" fontSize="10.5">LLM {hovered.llm.toFixed(2)}</text>}</g>}
             </svg>
             <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: '0.72rem', opacity: 0.7 }}>
                 <span>Latest {Number(pattern.inputs?.latest_close).toFixed(2)}</span>
@@ -386,6 +424,7 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
             {pattern.scenario_label && <div style={{ marginTop: '0.55rem', fontSize: '0.7rem', opacity: 0.75 }}><strong>Mode:</strong> {pattern.scenario_label}{pattern.llm_model ? ` · ${pattern.llm_model}` : ''}</div>}
             {showLevels && technicalLevels.previous_low && <div style={{ marginTop: '0.4rem', fontSize: '0.68rem', opacity: 0.72 }}><strong>Previous confirmed low:</strong> {Number(technicalLevels.previous_low.price).toFixed(2)} ({technicalLevels.previous_low.bars_ago} bars ago). {technicalLevels.trend_support && <>Support anchors: {new Date(technicalLevels.trend_support.anchor_1?.time).toLocaleString()} at {Number(technicalLevels.trend_support.anchor_1?.price).toFixed(2)} → {new Date(technicalLevels.trend_support.anchor_2?.time).toLocaleString()} at {Number(technicalLevels.trend_support.anchor_2?.price).toFixed(2)} · {technicalLevels.trend_support.touches} touches · {technicalLevels.trend_support.confidence} confidence.</>}</div>}
             {showLevels && ((technicalLevels.trend_support_candidates || []).length > 0 || (technicalLevels.trend_resistance_candidates || []).length > 0) && <details style={{ marginTop: '0.55rem', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, padding: '0.5rem 0.6rem' }}><summary style={{ cursor: 'pointer', fontSize: '0.7rem', fontWeight: 800 }}>Nearby slope candidates ({(technicalLevels.trend_support_candidates || []).length} support · {(technicalLevels.trend_resistance_candidates || []).length} resistance)</summary><div style={{ marginTop: '0.55rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(225px, 1fr))', gap: '0.45rem' }}>{[...(technicalLevels.trend_support_candidates || []), ...(technicalLevels.trend_resistance_candidates || [])].map((line, index) => <div key={`${line.kind}-${index}`} style={{ padding: '0.5rem 0.6rem', borderRadius: 6, background: line.kind === 'support' ? 'rgba(16,185,129,0.06)' : 'rgba(239,68,68,0.06)', fontSize: '0.67rem', lineHeight: 1.45 }} title={`${new Date(line.anchor_1?.time).toLocaleString()} ${line.anchor_1?.price} → ${new Date(line.anchor_2?.time).toLocaleString()} ${line.anchor_2?.price}`}><strong style={{ color: line.kind === 'support' ? 'var(--brand-green)' : 'var(--brand-red)' }}>{line.kind} · {line.confidence}</strong><div>Now {Number(line.current_price).toFixed(2)} · {Number(line.distance_pct) >= 0 ? '+' : ''}{Number(line.distance_pct).toFixed(2)}% away</div><div>Slope {Number(line.slope_per_bar).toFixed(4)}/bar · {line.touches} touches · {line.violations} violations</div><div style={{ opacity: 0.55 }}>{new Date(line.anchor_1?.time).toLocaleString()} → {new Date(line.anchor_2?.time).toLocaleString()}</div></div>)}</div></details>}
+            {pattern.explanation && !pattern.llm_rationale && <div style={{ marginTop: '0.45rem', padding: '0.55rem 0.65rem', background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.16)', borderRadius: 6, fontSize: '0.72rem' }}><strong>How this forecast works:</strong> {pattern.explanation}</div>}
             {pattern.llm_rationale && <div style={{ marginTop: '0.45rem', padding: '0.55rem 0.65rem', background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.16)', borderRadius: 6, fontSize: '0.72rem' }}>{pattern.llm_regime && <><strong>Regime:</strong> {pattern.llm_regime}. </>}<strong>AI scenario:</strong> {pattern.llm_rationale}{pattern.llm_invalidation ? ` Invalidation: ${pattern.llm_invalidation}` : ''}</div>}
             <p style={{ margin: '0.65rem 0 0', fontSize: '0.68rem', opacity: 0.5 }}>{pattern.warning}</p>
         </div>
@@ -2000,6 +2039,18 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 const finalCommentary = getThreadState(threadId).liveCommentary || [];
                                 const usage = data.usage || null;
                                 updateMessage(threadId, msgId, responseText, null, thinking || null, steps, toolData, null, null, data.task_id, finalCommentary.length ? finalCommentary : null, usage);
+                                
+                                // Check if agent is waiting for user clarification
+                                if (data.needs_user_input && data.clarification_question) {
+                                    updateThreadStreamState(threadId, {
+                                        pendingAgentRequest: {
+                                            kind: 'strategy_clarify',
+                                            prompt: prompt,
+                                            question: data.clarification_question
+                                        }
+                                    });
+                                }
+                                
                                 // Don't auto-expand - let user click to expand if interested
                                 
                                 // Refresh data after agent completion (strategy generation, downloads, etc.)

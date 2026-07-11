@@ -123,6 +123,7 @@ test_*.py
 Thumbs.db
 backend/data/system_settings.json
 *.json
+!/package.json
 !backend/data/db.example.json
 !backend/data/system_settings.example.json
 

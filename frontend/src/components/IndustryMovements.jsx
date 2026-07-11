@@ -25,6 +25,8 @@ const MOVEMENT_CACHE_TTL_MS = 60_000;
 const NEWS_MOVER_PAGE_SIZE = 6;
 
 const MOVEMENT_WINDOWS = {
+    '1m': { label: '1 Min', period: '1d', interval: '1m' },
+    '2m': { label: '2 Min', period: '1d', interval: '2m' },
     '5m': { label: '5 Min', period: '1d', interval: '5m' },
     '15m': { label: '15 Min', period: '1d', interval: '15m' },
     '30m': { label: '30 Min', period: '1d', interval: '30m' },
@@ -78,6 +80,10 @@ const STOCK_META = {
     ORCL: ['Technology', 'Software'], CRM: ['Technology', 'Software'], ADBE: ['Technology', 'Software'], CSCO: ['Technology', 'Communication Equipment'], AMD: ['Technology', 'Semiconductors'], INTC: ['Technology', 'Semiconductors'], IBM: ['Technology', 'Information Technology Services'], QCOM: ['Technology', 'Semiconductors'],
     PYPL: ['Financial Services', 'Payments'], UBER: ['Technology', 'Software'], XYZ: ['Technology', 'Software'], SNAP: ['Communication Services', 'Internet'],
     PG: ['Consumer Defensive', 'Household Products'], KO: ['Consumer Defensive', 'Beverages'], PEP: ['Consumer Defensive', 'Beverages'], PM: ['Consumer Defensive', 'Tobacco'],
+    TQQQ: ['ETF', 'Leveraged ETF'], SQQQ: ['ETF', 'Leveraged ETF'], QLD: ['ETF', 'Leveraged ETF'], QID: ['ETF', 'Leveraged ETF'], UPRO: ['ETF', 'Leveraged ETF'], SPXU: ['ETF', 'Leveraged ETF'], SPXL: ['ETF', 'Leveraged ETF'], SPXS: ['ETF', 'Leveraged ETF'],
+    SSO: ['ETF', 'Leveraged ETF'], SDS: ['ETF', 'Leveraged ETF'], TNA: ['ETF', 'Leveraged ETF'], TZA: ['ETF', 'Leveraged ETF'], UDOW: ['ETF', 'Leveraged ETF'], SDOW: ['ETF', 'Leveraged ETF'], SOXL: ['ETF', 'Leveraged ETF'], SOXS: ['ETF', 'Leveraged ETF'],
+    TECL: ['ETF', 'Leveraged ETF'], TECS: ['ETF', 'Leveraged ETF'], FNGU: ['ETF', 'Leveraged ETN'], FNGD: ['ETF', 'Leveraged ETN'], NVDL: ['ETF', 'Leveraged ETF'], NVDQ: ['ETF', 'Leveraged ETF'], TSLL: ['ETF', 'Leveraged ETF'], TSLQ: ['ETF', 'Leveraged ETF'],
+    LABU: ['ETF', 'Leveraged ETF'], LABD: ['ETF', 'Leveraged ETF'], FAS: ['ETF', 'Leveraged ETF'], FAZ: ['ETF', 'Leveraged ETF'], BOIL: ['ETF', 'Leveraged ETF'], KOLD: ['ETF', 'Leveraged ETF'],
 };
 
 const FALLBACK_HIGH_VOLUME = [
@@ -89,6 +95,7 @@ const FALLBACK_HIGH_VOLUME = [
 const UNIVERSE_PRESETS = [
     { key: 'high-market-cap', label: 'High Market Cap', tickers: ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'GOOG', 'AMZN', 'META', 'AVGO', 'TSLA', 'LLY', 'JPM', 'V', 'MA', 'XOM', 'WMT', 'UNH', 'COST', 'NFLX', 'ORCL', 'JNJ'] },
     { key: 'market-etfs', label: 'Market ETFs', tickers: ['SPY', 'QQQ', 'IWM', 'DIA', 'TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'XLK', 'SMH', 'XLF', 'XLE', 'XLV', 'XLY', 'XLI', 'XLC', 'XLP', 'XLRE', 'XLU'] },
+    { key: 'leverage', label: 'Leverage', tickers: ['TQQQ', 'SQQQ', 'QLD', 'QID', 'UPRO', 'SPXU', 'SPXL', 'SPXS', 'SSO', 'SDS', 'TNA', 'TZA', 'UDOW', 'SDOW', 'SOXL', 'SOXS', 'TECL', 'TECS', 'FNGU', 'FNGD', 'NVDL', 'NVDQ', 'TSLL', 'TSLQ', 'LABU', 'LABD', 'FAS', 'FAZ', 'BOIL', 'KOLD'] },
     { key: 'semis', label: 'Semis', tickers: ['NVDA', 'AMD', 'AVGO', 'INTC', 'QCOM', 'MU', 'ARM', 'SMCI', 'TSM', 'ASML', 'MRVL', 'AMAT', 'LRCX', 'KLAC', 'TXN', 'ADI', 'ON', 'MCHP'] },
     { key: 'software-ai', label: 'Software / AI', tickers: ['MSFT', 'ORCL', 'CRM', 'ADBE', 'PLTR', 'SNOW', 'MDB', 'NOW', 'DDOG', 'NET', 'CRWD', 'PANW', 'ZS', 'SHOP', 'UBER'] },
     { key: 'financials', label: 'Financials', tickers: ['JPM', 'BAC', 'WFC', 'C', 'GS', 'MS', 'BLK', 'SCHW', 'SOFI', 'HOOD', 'COIN', 'V', 'MA', 'AXP', 'PYPL'] },
@@ -298,7 +305,7 @@ const SignalExpectedPattern = ({ pattern, loading, error, onRefresh, horizon, se
             : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
     };
     const endReturn = Number(pattern?.expected_end_return_pct || 0);
-    const horizonLimit = generationMode === 'calculation' ? 250 : 120;
+    const horizonLimit = generationMode === 'calculation' ? 500 : 250;
     const rawTargetBars = horizonMode === 'timestamp' && targetTime 
         ? estimateRawBarsUntil(targetTime, interval) 
         : horizonMode === 'time' && timeRange
@@ -489,6 +496,7 @@ const SignalExpectedPattern = ({ pattern, loading, error, onRefresh, horizon, se
                             </div>
                         </details>
                     )}
+                    {pattern.explanation && !pattern.llm_rationale && <div style={{ marginTop: '0.35rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(59,130,246,0.07)', border: '1px solid rgba(59,130,246,0.16)', fontSize: '0.7rem', lineHeight: 1.45 }}><strong>How this forecast works:</strong> {pattern.explanation}</div>}
                     {pattern.llm_rationale && <div style={{ marginTop: '0.35rem', padding: '0.55rem 0.65rem', borderRadius: 6, background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.16)', fontSize: '0.7rem', lineHeight: 1.45 }}>{pattern.llm_regime && <><strong>Regime:</strong> {pattern.llm_regime}. </>}<strong>AI scenario:</strong> {pattern.llm_rationale}{pattern.llm_invalidation ? ` Invalidation: ${pattern.llm_invalidation}` : ''}</div>}
                     <div style={{ marginTop: '0.45rem', fontSize: '0.66rem', color: 'var(--text-muted)' }}>{pattern.warning || 'Historical scenario—not a guaranteed prediction.'}</div>
                 </>

@@ -181,7 +181,22 @@ Open <http://localhost:5173>.
 
 ### 4. Optional: start local web search
 
-News and Web Research prefer SearXNG. SearXNG is **not Docker-only**: it may run as a native service, on another machine, or from the bundled Compose service. If Docker is available, the easiest repository-supported option is:
+News and Web Research prefer SearXNG. SearXNG is **not Docker-only**: TradingSpy only needs a reachable SearXNG HTTP service. It may run as a native service, on another machine, or from the bundled Compose service.
+
+If Docker Desktop or Docker Engine is running, the easiest repository-supported local-dev option is the npm helper from the repository root:
+
+```bash
+npm run dev:searxng
+npm run health:searxng
+```
+
+This starts only SearXNG at <http://localhost:8080>; it does not start the backend or frontend containers. To stop it:
+
+```bash
+npm run stop:searxng
+```
+
+The equivalent Docker command is:
 
 ```bash
 docker compose up -d searxng

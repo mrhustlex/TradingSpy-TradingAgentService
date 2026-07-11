@@ -5,7 +5,7 @@
 
 const DEFAULT_PROVIDER = 'google_ai_studio';
 const DEFAULT_MODEL = 'gemini-2.5-flash';
-const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter', 'litellm', 'ollama']);
+const supportedProviders = new Set(['google_ai_studio', 'mistral', 'openrouter', 'nvidia', 'litellm', 'ollama']);
 
 const normalizeProvider = (provider) => {
     const p = (provider || DEFAULT_PROVIDER).trim().toLowerCase().replace(/[-\s]/g, '_');
@@ -26,6 +26,7 @@ const keyMap = {
     googleaistudio: 'settings_google_ai_studio_api_key',
     gemini: 'settings_google_ai_studio_api_key',
     mistral: 'settings_mistral_api_key',
+    nvidia: 'settings_nvidia_api_key',
     litellm: 'settings_litellm_api_key',
 };
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
 import axios from 'axios';
-import { RefreshCw, List, Trash2, X, Activity, TrendingUp, TrendingDown, Code, ShieldCheck, FileCode, CheckCircle, AlertCircle, Wand2, Play } from 'lucide-react';
+import { RefreshCw, List, Trash2, X, Activity, TrendingUp, TrendingDown, Code, ShieldCheck, FileCode, CheckCircle, AlertCircle, Wand2, Play, MessageCircleQuestion } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Papa from 'papaparse';
 import { BACKTEST_SERVICE, DATA_SERVICE } from '../config';
@@ -10,7 +10,7 @@ import { getApiSettings } from '../utils/apiKeyHelper';
 const ChartViewer = lazy(() => import('./ChartViewer'));
 
 
-const ResultsHistory = ({ onAnalyze, notify, files = [], onTrigger, onRefreshStrats, onOpenInTerminal, onSwitchTab }) => {
+const ResultsHistory = ({ onAnalyze, notify, files = [], onTrigger, onRefreshStrats, onOpenInTerminal, onSwitchTab, onExplain }) => {
     const [history, setHistory] = useState([]);
     const [loading, setLoading] = useState(false);
     const [selectedResult, setSelectedResult] = useState(null);
@@ -342,6 +342,17 @@ const ResultsHistory = ({ onAnalyze, notify, files = [], onTrigger, onRefreshStr
                                         title="Open this dataset in Battle Station"
                                     >
                                         <Activity size={14} /> Open in Battle Station
+                                    </button>
+                                    <button
+                                        className="btn btn-sm"
+                                        onClick={() => {
+                                            const summary = `Explain this backtest result:\n\nDataset: ${formatDatasetName(selectedResult.dataset)}\nDate: ${new Date(selectedResult.timestamp).toLocaleString()}\nStrategies Tested: ${selectedResult.summary?.total_strategies || 0}\nBest Strategy: ${selectedResult.summary?.best_strategy || 'N/A'}\nBest ROI: ${selectedResult.summary?.best_roi?.toFixed(2) || '0.00'}%\nAverage ROI: ${selectedResult.summary?.avg_roi?.toFixed(2) || '0.00'}%\nWorst ROI: ${selectedResult.summary?.worst_roi?.toFixed(2) || '0.00'}%\nTotal Trades: ${selectedResult.summary?.total_trades || 'N/A'}\n\nWhat insights can you provide about these results? What patterns do you see? What should I try next?`;
+                                            onExplain?.(summary, 'Explaining backtest results');
+                                        }}
+                                        style={{ color: 'var(--brand-green)', borderColor: 'var(--brand-green)', fontSize: '0.75rem' }}
+                                        title="Explain results in Assistant"
+                                    >
+                                        <MessageCircleQuestion size={14} /> Explain
                                     </button>
                                     <button
                                         className="btn btn-ghost btn-xs"

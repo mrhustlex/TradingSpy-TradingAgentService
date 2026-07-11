@@ -111,6 +111,10 @@ const App = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(localStorage.getItem('sidebar_collapsed') === 'true');
   const [assistantPrompt, setAssistantPrompt] = useState(null);
+  const [searxngWarningDismissed, setSearxngWarningDismissed] = useState(() => {
+    return localStorage.getItem('searxng_warning_dismissed') === 'true';
+  });
+  const [searxngAvailable, setSearxngAvailable] = useState(null);
 
   // Handler to switch to Battle Station with a specific ticker
   const handleBacktestTicker = (ticker) => {
@@ -157,6 +161,19 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem('sidebar_collapsed', sidebarCollapsed);
   }, [sidebarCollapsed]);
+
+  // Check SearXNG availability on mount
+  useEffect(() => {
+    const checkSearXNG = async () => {
+      try {
+        const res = await axios.get(`${SETTINGS_URL}/search-health`, { timeout: 3000 });
+        setSearxngAvailable(res.data?.searxng_reachable || false);
+      } catch (e) {
+        setSearxngAvailable(false);
+      }
+    };
+    checkSearXNG();
+  }, []);
 
 
   const notify = (message, type = 'blue') => {
@@ -621,6 +638,7 @@ const App = () => {
                   setActiveTab('terminal');
                 }}
                 onSwitchTab={setActiveTab}
+                onExplain={(prompt, label) => explainWithAssistant(prompt, label)}
               />
             </motion.div>
           )}
