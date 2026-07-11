@@ -1,47 +1,173 @@
-# TradingSpy
+<p align="center">
+  <img src="docs/images/banner.svg" alt="TradingSpy" width="100%"/>
+</p>
 
-**An AI trading research workbench that shows its work—and tests its ideas.**
+> Local-first AI trading research: market heatmaps, news catalysts, strategy generation, Backtrader backtests, and transparent agent runs in one Docker app.
 
-Explore market context, generate Backtrader strategies, and verify them against real historical candles in one local Docker Compose stack. TradingSpy does not connect to a brokerage or place trades.
+TradingSpy is an open-source research workstation for traders and builders who want to ask questions, inspect market context, generate strategy ideas, and test them against real historical candles without wiring together five separate tools.
 
-[Quick Start](#quick-start-with-docker) · [How It Works](#how-it-works) · [First Run](#first-run) · [Local Development](#local-development-without-docker) · [API](#openai-compatible-api) · [Contributing](#contributing)
+It is not a broker and it does not place trades. It is a local research environment for analysis, backtesting, and strategy iteration. Fully open-source, zero data privacy concerns, and free of charge.
 
-## Highlights
+<p align="center">
+  <a href="https://buymeacoffee.com/mrhustlex">
+    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"/>
+  </a>
+</p>
 
-- Tool-using market assistant with transparent agent runs and progress.
-- Market, sector, industry, news, insider, and technical context.
-- Backtrader strategy generation, validation, optimization, and benchmark comparisons.
-- Local data storage with no hosted TradingSpy account required.
-- Google AI Studio, Mistral, OpenRouter, LiteLLM, and local Ollama support.
-- OpenAI-compatible local API for scripts and other agent clients.
+---
 
-## How It Works
+## What Could You Do with TradingSpy?
 
-TradingSpy turns a research request into an inspectable workflow instead of returning an unsupported answer and calling it done.
+- **Trading Companion** — Chat with your market data, strategies, news, heatmaps, and backtest history.
+- **Strategy Researcher** — Research to find the best trading strategies until it beats the baseline strategy.
+- **Trading Trend Prediction** — Leverage calculation and LLM with the support and resistance lines to simulate expected stock trend.
+- **Trading Signal Analysis** — The tool analyzes the real-time movement, incorporates peer stocks, insider trading information, and trading indicators.
 
-```mermaid
-flowchart LR
-    Ask["Ask a market or strategy question"] --> Context["Collect market context and data"]
-    Context --> Draft["Generate strategy candidates"]
-    Draft --> Validate["Validate Python and trade activity"]
-    Validate --> Backtest["Run Backtrader backtests"]
-    Backtest --> Compare["Compare with buy-and-hold or a saved strategy"]
-    Validate -- "invalid or zero trades" --> Draft
-    Compare -- "underperforms" --> Draft
-    Compare -- "accepted" --> Review["Review code, evidence, and result"]
-```
+---
 
-The Task Center keeps the plan, progress, tool calls, validation failures, benchmark target, and accepted result visible while longer workflows run.
+## Key Design
 
-## Quick Start With Docker
+TradingSpy is designed with a hybrid approach: traditional data visualisation for quick, deterministic results combined with loop-engineering-powered agents as a trading companion.
 
-This is the recommended installation path.
+### Features
 
-### Prerequisites
+| Feature | What it does |
+| --- | --- |
+| **Market Intelligence** | Real-time quotes, sector heatmaps, industry performance, insider activity, news search, and fundamentals — all in one query. |
+| **AI Strategy Generation** | Describe a trading thesis in plain English; get a working Backtrader strategy with syntax and runtime validation. |
+| **Automated Backtesting** | Every generated strategy is backtested against downloaded candles with configurable parameter sweeps. |
+| **Benchmark Comparison** | Every result is compared to buy-and-hold and any saved strategy. Underperformers are rejected automatically. |
+| **Loop Engineering** | Set a goal ("beat buy-and-hold", "find undervalued semiconductors") and the agent iterates until it succeeds — no babysitting required. |
+| **Transparent Agent Runs** | Every tool call, validation failure, rejection reason, and accepted result is logged and visible in the Task Center. |
+| **Multi-Provider LLM** | Google AI Studio, Mistral, OpenRouter, NVIDIA, LiteLLM, Ollama (local), AWS Bedrock, GCP Vertex AI, and Azure OpenAI. |
+| **OpenAI-Compatible API** | Use TradingSpy as a backend for scripts, other agents, or custom integrations via `/v1/chat/completions`. |
+| **Local-First Architecture** | All data stored under `backend/data/`. No external accounts, no telemetry, no cloud dependency. |
 
-- Git.
-- Docker Desktop, or Docker Engine with Docker Compose v2.
-- An API key for a hosted LLM provider, or a local Ollama installation. The app starts without either, but AI features require one configured model.
+### Agents
+
+| Agent | Example Prompt | What it does |
+| --- | --- | --- |
+| **Strategy Race** | `Generate until it beats buy and hold for QQQ. Use daily candles.`<br><br>`Improve EMA_Trend for TQQQ using daily candles. Generate until it beats EMA_Trend, not buy and hold.` | Generates strategies based on selected modes (tick data, research papers, etc.) from the AI Strategy Studio. Improves or compares strategies over rounds — can use a previous accepted version or selected baseline, generate candidates, backtest them, and accept only versions that beat the target benchmark. |
+| **Signal Analysis** | `Predict the next move for btc-usd for daily interval` | Reads recent bars and support/resistance levels to predict the price trend. |
+| **Stock Screening** | `Scan AI stocks until you find 10 which are good enough on fundamentals` | Uses the fundamental scanner to search for undervalued stocks. Screens a universe for valuation/growth/profitability candidates, enriches passing names with market context, news, options, and insider summaries. Can continue with a wider universe. |
+| **Chat** | `Give me a daily market brief with breadth, strongest and weakest industries, important news, and earnings.` | Pulls data from yfinance to summarize daily market information. |
+
+<!-- TODO: Add individual agent GIFs per row above (strategy-race.gif, signal-analysis.gif, stock-screening.gif, chat.gif) -->
+
+<p align="center">
+  <img src="docs/images/agent/agent.gif" alt="Agent in action" width="80%"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/UI/Strategy Generation.png" alt="Strategy Generation" width="80%"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/UI/Trading Signal.png" alt="Trading Signal" width="80%"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/UI/Price Prediction.png" alt="Price Prediction" width="80%"/>
+</p>
+
+#### Background Runs
+
+If the request involves long-running work, the UI creates a background run through `/api/agent/runs`. Background runs are stored locally, visible in the Task Center, and support:
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/agent/runs` | List recent runs |
+| `GET` | `/api/agent/runs/{run_id}` | Poll full state |
+| `POST` | `/api/agent/runs/{run_id}/stop` | Request cancellation |
+| `POST` | `/api/agent/runs/{run_id}/continue` | Continue a completed or stopped run |
+| `DELETE` | `/api/agent/runs/{run_id}` | Delete a single run |
+| `DELETE` | `/api/agent/runs` | Clean all records |
+
+For strategy workflows, the agent is deliberately conservative: it validates generated code before backtesting, rejects zero-trade results instead of treating `0% ROI` as meaningful, and reports validation failures and runtime errors as part of the public run log. It supports custom agent instructions, answer budget, run detail, sequential/parallel execution, and custom battle parameters.
+
+For insider buy/sell questions, the assistant uses deterministic tool-backed responses. It reports only returned records, separates open-market buys/sells from grants or awards, and says so if the feed is unavailable instead of filling gaps from memory.
+
+### Market Overview UI
+
+Not every question needs an agent. TradingSpy ships a full market dashboard for quick, deterministic results.
+
+| Component | Details |
+| --- | --- |
+| **Sector Heatmap** | Color-coded grid of 25+ industry proxy ETFs grouped by sector. 16 time periods (1 min – max + YTD), extended hours toggle, search/filter, custom groups, and an **Explain** button that sends the heatmap to the AI assistant for analysis. Two display modes: industry ETFs or watchlist stocks. |
+| **Indices Banner** | Top-of-page bar showing S&P 500, Dow Jones, NASDAQ 100, and Russell 2000 with live prices and percentage changes. |
+| **Industry Movements** | Tracks individual stock price changes across 12 time windows (1 min to 1 year) for 68+ major US stocks. Universe presets: High Cap, Semis, Software/AI, Leverage. |
+| **Watchlist & Intelligence** | Auto-sync watchlists, real-time batch quotes, deep-dive panel (company info, technicals, news, insider activity), and embedded candlestick charts. |
+
+<p align="center">
+  <img src="docs/images/UI/Market Overview.png" alt="Market Overview" width="80%"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/UI/Movement.png" alt="Industry Movements" width="80%"/>
+</p>
+
+---
+
+## Data Sources and Markets Supported
+
+### Data Sources
+
+| Source | What it provides |
+| --- | --- |
+| **Yahoo Finance** | Price quotes, OHLCV candles (daily, intraday, extended-hours), fundamentals, insider transactions, analyst recommendations, earnings dates, options chains, sector/industry metadata, screener queries. Primary data backbone. |
+| **SearXNG** | Privacy-respecting metasearch for web and news — financial news, analyst opinions, macro events, catalyst research. Runs locally via Docker or standalone. |
+| **DuckDuckGo** | Fallback web search when SearXNG is unavailable. HTML scraping + instant answer API. |
+| **arXiv** | Academic papers on quantitative finance and algorithmic trading. Abstract and full-text PDF reading. |
+| **Backtrader** | Local backtesting engine for strategy execution, parameter optimization, and benchmark comparison. |
+
+### Supported Markets
+
+Any Yahoo Finance-compatible symbol works. Coverage varies by symbol and upstream source.
+
+| Market | Examples | Suffix |
+| --- | --- | --- |
+| United States | `AAPL`, `NVDA`, `QQQ`, `SPY` | — |
+| London | `AZN.L`, `HSBA.L` | `.L` |
+| Hong Kong | `0700.HK` | `.HK` |
+| Japan | `7203.T` | `.T` |
+| India | `RELIANCE.NS` | `.NS` |
+| Canada | `SHOP.TO` | `.TO` |
+| Australia | `BHP.AX` | `.AX` |
+| Germany / France / UK / Eurozone | `^GDAXI`, `^FCHI`, `^FTSE`, `^STOXX50E` | `^` prefix |
+| China | `000001.SS` | `.SS` |
+| Crypto | `BTC-USD`, `ETH-USD` | `-USD` |
+| Commodities | `GC=F` (Gold), `CL=F` (Oil) | `=F` |
+
+### Global Index Coverage
+
+| Region | Indices |
+| --- | --- |
+| United States | S&P 500, Dow Jones, NASDAQ 100, Russell 2000, VIX |
+| Europe | STOXX 50, FTSE 100, DAX, CAC 40 |
+| Asia | Nikkei 225, Hang Seng, Shanghai Composite, ASX 200 |
+| Commodities | Gold Futures, Crude Oil |
+| Crypto | Bitcoin, Ethereum |
+
+---
+
+## LLM Providers Supported
+
+| Provider | Environment variable | Example default model |
+| --- | --- | --- |
+| Google AI Studio | `GOOGLE_AI_STUDIO_API_KEY` | `gemini-2.5-flash` |
+| Mistral | `MISTRAL_API_KEY` | `mistral-large-latest` |
+| OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
+| NVIDIA | `NVIDIA_API_KEY` | `nvidia/llama-3.1-405b-instruct` |
+| LiteLLM | `LITELLM_API_KEY`, `LITELLM_BASE_URL` | Your proxy's model ID |
+| Ollama (local) | `OLLAMA_BASE_URL`; no API key required | `qwen2.5-coder:7b` |
+
+> **Additional providers**: AWS Bedrock, GCP Vertex AI, and Azure OpenAI are supported via the LiteLLM proxy. Point `LITELLM_BASE_URL` at your proxy and configure provider credentials there.
+
+Keys may be stored in `.env`/`backend/.env` or entered in the app's Settings page. Never commit a real key. See [.env.example](.env.example) for every supported setting.
+
+---
+
+## Quick Start
 
 ### 1. Clone and configure
 
@@ -51,23 +177,19 @@ cd TradingSpy
 cp .env.example .env
 ```
 
-Open `.env` and add one provider key. Google AI Studio is the default:
+Add at least one provider key to `.env`:
 
 ```bash
-GOOGLE_AI_STUDIO_API_KEY=your-key
+GOOGLE_AI_STUDIO_API_KEY=your-gemini-key
 DEFAULT_PROVIDER=google_ai_studio
 DEFAULT_MODEL=gemini-2.5-flash
 ```
 
-You may leave the keys blank and configure a provider later from the app's Settings page.
-
-To use Ollama instead of a hosted provider, [install Ollama](https://docs.ollama.com/quickstart), pull a model, and configure the local provider:
+Or use Ollama (no API key required):
 
 ```bash
 ollama pull qwen2.5-coder:7b
 ```
-
-Set these values in `.env`:
 
 ```bash
 DEFAULT_PROVIDER=ollama
@@ -75,101 +197,46 @@ DEFAULT_MODEL=qwen2.5-coder:7b
 OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
 ```
 
-Ollama normally runs in the background after installation. If needed, start it manually with `ollama serve` before starting TradingSpy.
-TradingSpy connects through Ollama's [OpenAI-compatible API](https://docs.ollama.com/api/openai-compatibility).
+You can also configure providers later in the app's Settings page.
 
-### 2. Start TradingSpy
+### 2. Run
 
 ```bash
 docker compose up -d --build
 ```
 
-The first build downloads the application dependencies. Later starts use the Docker cache.
+| Service | URL |
+| --- | --- |
+| App | http://localhost:3000 |
+| Backend API | http://localhost:8000 |
+| API docs | http://localhost:8000/docs |
+| SearXNG | http://localhost:8080 |
 
-Check that all three services are healthy:
-
-```bash
-docker compose ps
-```
-
-Open:
-
-- TradingSpy: <http://localhost:3000>
-- API documentation: <http://localhost:8000/docs>
-- SearXNG: <http://localhost:8080>
-
-### 3. Stop or update
+### 3. Stop
 
 ```bash
-# Stop the application without deleting local data
 docker compose down
-
-# Pull updates and rebuild
-git pull
-docker compose up -d --build
 ```
 
-Runtime data remains under `backend/data/`.
+Runtime data remains under `backend/data/`. Pull updates and rebuild with `git pull && docker compose up -d --build`.
 
-## Local Development Without Docker
+---
 
-Use this path when you want hot reload or plan to change the code.
+## Manual Development
 
-### Prerequisites
-
-- Python 3.11. Python 3.13 is not currently supported by the data-science dependency set.
-- Node.js 22 and npm.
-- Git.
-- Docker is optional for SearXNG-backed web/news search.
-
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/mrhustlex/TradingSpy.git
-cd TradingSpy
-cp .env.example backend/.env
-```
-
-Add one provider key to `backend/.env`, or configure it later in the UI.
-
-For local Ollama development, no key is required:
-
-```bash
-ollama pull qwen2.5-coder:7b
-```
-
-Then set the following in `backend/.env`:
-
-```bash
-DEFAULT_PROVIDER=ollama
-DEFAULT_MODEL=qwen2.5-coder:7b
-OLLAMA_BASE_URL=http://localhost:11434/v1
-```
-
-### 2. Start the backend
-
-Run in the first terminal:
+### Backend
 
 ```bash
 cd backend
 python3.11 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-On Windows PowerShell, activate the environment with:
+> Use Python 3.11. The pinned data-science dependencies are not reliable with Python 3.13.
 
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Confirm the backend is ready at <http://localhost:8000/health>.
-
-### 3. Start the frontend
-
-Run in a second terminal from the repository root:
+### Frontend
 
 ```bash
 cd frontend
@@ -177,156 +244,41 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:5173>.
+Open http://localhost:5173.
 
-### 4. Optional: start local web search
-
-News and Web Research prefer SearXNG. SearXNG is **not Docker-only**: TradingSpy only needs a reachable SearXNG HTTP service. It may run as a native service, on another machine, or from the bundled Compose service.
-
-If Docker Desktop or Docker Engine is running, the easiest repository-supported local-dev option is the npm helper from the repository root:
+### Optional: SearXNG for web/news search
 
 ```bash
-npm run dev:searxng
-npm run health:searxng
+npm run dev:searxng    # start
+npm run stop:searxng   # stop
 ```
 
-This starts only SearXNG at <http://localhost:8080>; it does not start the backend or frontend containers. To stop it:
+This starts only SearXNG at `localhost:8080`. Alternatively, `docker compose up -d searxng`.
 
-```bash
-npm run stop:searxng
-```
-
-The equivalent Docker command is:
-
-```bash
-docker compose up -d searxng
-```
-
-For a separately managed SearXNG instance, configure its base URL in `backend/.env`:
-
-```bash
-SEARXNG_URL=http://localhost:8080
-```
-
-The rest of TradingSpy works when SearXNG is unavailable, but **Web Research** needs a working search provider. The DuckDuckGo fallback may be unavailable or return no results. Direct arXiv search remains available when Research Papers is selected.
-
-Web Research reads adaptively. It first skims each selected page or paper abstract, checks whether it found concrete entry, exit, indicator, risk, and validation evidence, and deep-reads only sources that need more detail. For arXiv papers it can continue into the PDF. Reading is deliberately bounded (up to 12,000 extracted characters and 20 PDF pages per source), and only relevant passages are supplied to the strategy model.
-
-If every public search provider is temporarily unavailable, generation continues without citations instead of failing the job. The Studio labels this fallback clearly; it never invents or implies sources that were not read.
-
-### Expected Pattern forecasts
-
-Ask the Assistant for an expected pattern, projected trend, forecast chart, or forecast CSV for a symbol and timeframe—for example, `Show the expected pattern for QQQ over the next 20 daily bars`. It reads recent OHLCV bars, derives momentum, trend, mean-reversion, RSI, volume, and volatility context, then renders a central path with an 80% uncertainty band. The card includes one-click CSV export. Forecasts are reproducible statistical scenarios based on historical bars, not guaranteed prices or financial advice.
-
-## Provider Configuration
-
-Keys may be stored in `.env`/`backend/.env` or entered in Settings. Never commit a real key.
-
-| Provider | Environment variable | Example default model |
-| --- | --- | --- |
-| Google AI Studio | `GOOGLE_AI_STUDIO_API_KEY` | `gemini-2.5-flash` |
-| Mistral | `MISTRAL_API_KEY` | `mistral-large-latest` |
-| OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
-| LiteLLM | `LITELLM_API_KEY`, `LITELLM_BASE_URL` | Your proxy's model ID |
-| Ollama (local) | `OLLAMA_BASE_URL`; no API key | `qwen2.5-coder:7b` |
-
-See [.env.example](.env.example) for every supported setting.
-
-## First Run
-
-The quickest end-to-end check is:
-
-```text
-Download daily QQQ data for one year, then generate candidates until one beats buy and hold. Reject anything with zero trades.
-```
-
-Then:
-
-1. Open the Task Center and watch the workflow collect data, generate candidates, and backtest them.
-2. Inspect rejected candidates instead of treating failures as hidden retries.
-3. Review the accepted strategy code and its benchmark comparison.
-4. Select **Continue** to make the next run improve on the accepted version.
-
-Other useful prompts:
-
-```text
-Explain today's market and strongest sectors using current heatmap data and fresh news.
-```
-
-```text
-Generate candidates until one beats buy and hold for QQQ. Reject strategies with zero trades.
-```
-
-```text
-Find undervalued profitable semiconductor stocks and explain the evidence.
-```
-
-## What TradingSpy Includes
-
-### Research and market intelligence
-
-- Market overview, sector and industry heatmaps, watchlists, and ticker charts.
-- News and catalyst search through the local SearXNG service.
-- Fundamentals, insider activity, technical context, and data-freshness checks.
-- Daily, intraday, and extended-hours candle downloads.
-
-### Strategy research
-
-- Backtrader-powered backtests and parameter optimization.
-- AI-generated strategies with syntax and runtime validation.
-- Zero-trade rejection and buy-and-hold or saved-strategy benchmarks.
-- Persistent strategy, result, and optimization history.
-
-### Agent interfaces
-
-- Interactive tool-using assistant for short research questions.
-- Persistent background workflows for strategy races, market reviews, and screens.
-- OpenAI-compatible `/v1/chat/completions` interface.
-- Optional ACP and A2A outputs for trusted local integrations.
-
-## Supported Markets And Symbols
-
-TradingSpy uses Yahoo Finance-compatible symbols for candle downloads and market context. Examples include:
-
-| Market | Examples |
-| --- | --- |
-| United States | `AAPL`, `NVDA`, `QQQ`, `SPY` |
-| London | `AZN.L`, `HSBA.L` |
-| Hong Kong | `0700.HK` |
-| Japan | `7203.T` |
-| India | `RELIANCE.NS` |
-| Canada | `SHOP.TO` |
-| Australia | `BHP.AX` |
-| Crypto pairs | `BTC-USD`, `ETH-USD` |
-
-Availability, history depth, fundamentals, insider records, and intraday intervals vary by symbol and upstream data source.
+---
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    User["Browser / API client"] --> Frontend["React frontend"]
-    Frontend --> Backend["FastAPI backend"]
-    Backend --> Agents["Tool-using and background agents"]
-    Backend --> Backtest["Backtrader engine"]
-    Backend --> Market["Market data and intelligence"]
-    Backend --> Store["Local data under backend/data"]
-    Backend --> Search["SearXNG"]
-    Agents --> LLM["Configured LLM provider"]
-    Backend --> Ollama["Optional local Ollama"]
+    User["User / Browser"] --> Frontend["React Frontend<br/>localhost:3000"]
+    Frontend --> Backend["FastAPI Backend<br/>localhost:8000"]
+    Backend --> ChatAgent["Tool-Using Chat Assistant<br/>short research + tool checks"]
+    Backend --> WorkflowAgent["Background Workflow Agents<br/>strategy_create / strategy_race / market_review / fundamental_screener"]
+    Backend --> RemoteAgents["Remote Agent Outputs<br/>OpenAI-compatible / ACP / A2A"]
+    Backend --> Backtest["Backtrader Engine<br/>backtests + optimization"]
+    Backend --> Market["Market Intelligence<br/>yfinance + heatmaps + news"]
+    Backend --> Store["Local Data<br/>TinyDB + candles + strategies"]
+    Backend --> Search["SearXNG<br/>localhost:8080"]
+    ChatAgent --> LLM["Validated LLM Providers<br/>Google AI Studio / Mistral / OpenRouter / LiteLLM"]
+    WorkflowAgent --> LLM
+    RemoteAgents --> ChatAgent
+    RemoteAgents --> WorkflowAgent
 ```
 
-The Docker setup binds all services to `127.0.0.1`:
+### Local Data
 
-| Service | Address |
-| --- | --- |
-| Frontend | `http://localhost:3000` |
-| Backend | `http://localhost:8000` |
-| SearXNG | `http://localhost:8080` |
-
-## Local Data
-
-TradingSpy stores runtime data locally:
+All runtime data is stored locally and ignored by Git:
 
 ```text
 backend/data/
@@ -339,128 +291,106 @@ backend/data/
 └── temp_datas/
 ```
 
-These files are ignored by Git. Back them up separately if the results matter to you.
+Back these up separately if the results matter to you.
 
-## OpenAI-Compatible API
+---
 
-List the available adapter modes:
+## Reproducibility
 
-```bash
-curl http://localhost:8000/v1/models
-```
+| What | Deterministic? |
+| --- | --- |
+| Saved strategy against same candles, dates, capital, commission, parameters | Yes |
+| LLM-generated strategy code | No — non-deterministic across runs |
+| Live quotes, fundamentals, insider records, heatmaps, news | No — changes over time |
+| Model aliases and upstream provider behavior | May change — use explicit model IDs when comparing |
+| Backtest performance | Depends on period and assumptions — not a promise of future returns |
 
-Send a streaming request:
+Keep the dataset, generated strategy, benchmark, and run details together when sharing a result.
 
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "trading-ai-strands",
-    "stream": true,
-    "messages": [
-      {"role": "user", "content": "Is QQQ strong today? Use market context."}
-    ]
-  }'
-```
+---
 
-`trading-ai-strands` is the recommended tool-using adapter. `trading-ai` and `trading-ai-manual` provide plain responses, while `trading-ai-agentic` remains for compatibility.
+## Safety and Limits
+
+| Concern | Detail |
+| --- | --- |
+| Research only | TradingSpy is for research and education. It is not financial advice. |
+| Backtest overfitting | Backtests can overfit and do not predict future returns. |
+| Code execution | Generated strategy Python is executed locally and is **not sandboxed**. Review it before running. |
+| Network binding | Keep all services bound to localhost unless you add auth, TLS, network controls, and process isolation. |
+| Credentials | Keep API keys out of git. Use `.env` or your own secret manager. |
+
+---
 
 ## Troubleshooting
 
-### A service does not become healthy
+| Task | Command |
+| --- | --- |
+| Check services | `docker compose ps` |
+| Health check | `curl http://localhost:8000/health` |
+| View backend logs | `docker compose logs -f backend` |
+| View frontend logs | `docker compose logs -f frontend` |
+| View SearXNG logs | `docker compose logs -f searxng` |
+| Full rebuild | `docker compose build --no-cache && docker compose up -d` |
+| Check disk usage | `docker system df` |
+| Prune build cache | `docker builder prune` |
 
-```bash
-docker compose ps
-docker compose logs --tail=200 backend
-docker compose logs --tail=200 frontend
-docker compose logs --tail=200 searxng
-```
+---
 
-### A port is already in use
+## Roadmap
 
-TradingSpy needs local ports `3000`, `8000`, and `8080`. Stop the conflicting process or change the host-side port in `docker-compose.yml`.
+- Discord community server
+- Per-agent GIF demos in README
+- More LLM provider integrations
+- Strategy sharing and export
 
-### The assistant says no provider is configured
+> Join the conversation: [Discord](https://discord.gg/tradingspy) *(coming soon)*
 
-Add a key to `.env` and recreate the backend:
+---
 
-```bash
-docker compose up -d --force-recreate backend
-```
+## Contributing
 
-Alternatively, save the key from Settings in the application.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
-### Ollama cannot be reached
+| Type | What to do |
+| --- | --- |
+| Bug reports | Open an issue with steps to reproduce, expected vs. actual behavior, and environment details. |
+| Feature requests | Describe the use case, not just the implementation. What problem does it solve? |
+| Code | Pick an open issue or start a discussion first for large changes. |
+| Documentation | Fix typos, clarify explanations, or add examples. |
+| Testing | Try edge cases, different providers, or non-US markets and report what breaks. |
 
-Confirm Ollama is running and the selected model is installed:
+### Development workflow
 
-```bash
-ollama list
-ollama pull qwen2.5-coder:7b
-curl http://localhost:11434/api/tags
-```
-
-For Docker, keep `OLLAMA_BASE_URL=http://host.docker.internal:11434/v1`. For a backend running directly on the host, use `http://localhost:11434/v1`. If Ollama only listens on loopback inside another machine or container, expose it deliberately and review the security implications first.
-
-### Web Research says no sources were found
-
-Open Web Research and check its search-service status notice. If SearXNG is unavailable, either start the bundled service:
-
-```bash
-docker compose up -d searxng
-```
-
-Or run SearXNG separately and set `SEARXNG_URL` in `backend/.env`. Docker is optional; only a reachable SearXNG HTTP service is required. DuckDuckGo is a best-effort fallback and is not guaranteed to return results.
-
-### The frontend opens but the API is unavailable
-
-Check <http://localhost:8000/health>. For local development, make sure the backend terminal is still running and uses port `8000`.
-
-### Docker runs out of disk space
-
-Inspect usage before removing unused build cache:
-
-```bash
-docker system df
-docker builder prune
-```
-
-## Development Checks
+1. Fork the repository and create a feature branch.
+2. Set up with Docker or follow [Manual Development](#manual-development).
+3. Run development checks:
 
 ```bash
 python3 -m py_compile backend/main.py backend/modules/*.py
 npm run build --prefix frontend
-docker compose config --quiet
+npm run lint --prefix frontend
 ```
 
-The direct Python dependencies live in `backend/requirements.in`; `backend/requirements.txt` is the generated lock file used by Docker and local installs.
+4. Add or update tests where practical.
+5. Include screenshots for visual changes and request/response examples for API changes.
+6. Submit a pull request with a clear description of what changed and why.
 
-## Reproducibility
+### Guidelines
 
-TradingSpy separates evidence that can be reproduced from output that naturally changes:
+| Rule | Why |
+| --- | --- |
+| One logical change per PR | Keeps reviews focused and diffs clean. |
+| Never commit credentials, databases, market data, strategies, caches, or build output | Preserves security and keeps the repo small. |
+| Treat generated strategy code as untrusted | Preserve the local-only security model. |
+| No new lint warnings or errors in files you change | Keeps the codebase healthy. |
+| Contributions licensed under the repository's license | Standard open-source contribution terms. |
 
-- A saved strategy run against the same local candles, dates, capital, commission, and parameters should produce the same backtest result.
-- LLM-generated strategy code is non-deterministic and can differ between runs, even with the same prompt.
-- Live quotes, fundamentals, insider records, heatmaps, and news change over time.
-- Model aliases and upstream provider behavior may change. Use an explicit model ID when comparing experiments.
-- Backtest performance depends on the selected period and assumptions; it is not a promise of future returns.
-
-Keep the dataset, generated strategy, benchmark, and run details together when sharing a result.
-
-## Safety
-
-- TradingSpy is experimental research software, not financial advice or a trading signal service.
-- Backtests can overfit and do not predict future returns.
-- Generated strategy Python is executed locally and is not sandboxed. Review it before running it.
-- Keep all services bound to localhost unless you add authentication, TLS, network controls, and process isolation.
-- Keep credentials out of Git and rotate any key that has ever been committed.
-
-See [SECURITY.md](SECURITY.md) for the full security policy.
-
-## Contributing
-
-Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), review current work in [CHANGELOG.md](CHANGELOG.md), and use [SUPPORT.md](SUPPORT.md) when reporting a problem.
+---
 
 ## License
 
-TradingSpy is available under the [MIT License](LICENSE).
+TradingSpy is licensed under the PolyForm Noncommercial License 1.0.0. Non-commercial use is allowed; commercial use requires separate permission from the copyright holder. See [LICENSE](LICENSE).
+
+## Disclaimer
+
+TradingSpy is experimental software. It is not investment advice, a trading signal service, or a guarantee of performance. You are responsible for reviewing all generated code, assumptions, data quality, and results.
