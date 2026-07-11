@@ -27,6 +27,159 @@ function calcSMA(data, period) {
     }
     return r;
 }
+
+// Calculate slope-based trendlines with multiple candidates
+function calculateTrendlines(data) {
+    if (!data || data.length < 40) return { support: null, resistance: null, supportCandidates: [], resistanceCandidates: [] };
+    
+    const lows = data.map(d => d.low);
+    const highs = data.map(d => d.high);
+    const currentPrice = data[data.length - 1].close;
+    const currentTime = data[data.length - 1].time;
+    
+    // Find pivot points (local min/max over 3-bar window)
+    const radius = 3;
+    const pivotLows = [];
+    const pivotHighs = [];
+    
+    for (let i = radius; i < data.length - radius; i++) {
+        const isLow = lows[i] <= Math.min(...lows.slice(i - radius, i + radius + 1));
+        const isHigh = highs[i] >= Math.max(...highs.slice(i - radius, i + radius + 1));
+        if (isLow) pivotLows.push(i);
+        if (isHigh) pivotHighs.push(i);
+    }
+    
+    const trendlines = { support: null, resistance: null, supportCandidates: [], resistanceCandidates: [] };
+    
+    // Helper to generate interpolated points — straight line across the full chart
+    const generateLinePoints = (startIdx, endIdx, startPrice, endPrice) => {
+        const points = [];
+        const slope = (endPrice - startPrice) / (endIdx - startIdx);
+        // Project from the very start of the chart using the slope
+        const basePrice = startPrice - slope * startIdx;
+        for (let i = 0; i < data.length; i++) {
+            const projectedPrice = basePrice + slope * i;
+            points.push({ time: data[i].time, value: projectedPrice });
+        }
+        return points;
+    };
+    
+    // Helper to count touches (bars that touch the trendline within tolerance)
+    const countTouches = (startIdx, endIdx, startPrice, endPrice, isSupport) => {
+        const slope = (endPrice - startPrice) / (endIdx - startIdx);
+        const atr = Math.abs(Math.max(...highs) - Math.min(...lows)) / 20; // rough ATR
+        const tolerance = Math.max(atr * 0.5, currentPrice * 0.002);
+        let touches = 0;
+        let violations = 0;
+        
+        for (let i = startIdx; i < data.length; i++) {
+            const linePrice = startPrice + slope * (i - startIdx);
+            const distance = isSupport ? linePrice - lows[i] : highs[i] - linePrice;
+            if (Math.abs(distance) < tolerance) touches++;
+            else if (distance < -tolerance * 2) violations++;
+        }
+        return { touches, violations };
+    };
+    
+    // Generate support candidates (pairs of recent lows)
+    if (pivotLows.length >= 2) {
+        const candidates = [];
+        for (let i = Math.max(0, pivotLows.length - 6); i < pivotLows.length - 1; i++) {
+            const idx1 = pivotLows[i];
+            const idx2 = pivotLows[i + 1];
+            if (idx2 > idx1) {
+                const slope = (lows[idx2] - lows[idx1]) / (idx2 - idx1);
+                const projectedSupport = lows[idx1] + slope * (data.length - 1 - idx1);
+                const distancePct = (projectedSupport / currentPrice - 1) * 100;
+                const { touches, violations } = countTouches(idx1, idx2, lows[idx1], lows[idx2], true);
+                
+                // Confidence: high if 3+ touches and no violations, medium if 2 touches
+                let confidence = 'low';
+                if (touches >= 3 && violations === 0) confidence = 'high';
+                else if (touches >= 2 && violations <= 1) confidence = 'medium';
+                
+                const points = generateLinePoints(idx1, idx2, lows[idx1], lows[idx2]);
+                
+                candidates.push({
+                    price: Math.round(projectedSupport * 100) / 100,
+                    slope: slope > 0 ? 'rising' : 'falling',
+                    slopeValue: Math.round(slope * 10000) / 10000,
+                    slopePerBar: (slope * 1).toFixed(4),
+                    distance: Math.round(distancePct * 100) / 100,
+                    touches,
+                    violations,
+                    confidence,
+                    points
+                });
+            }
+        }
+        
+        // Sort by confidence and proximity to current price
+        candidates.sort((a, b) => {
+            const confOrder = { high: 0, medium: 1, low: 2 };
+            if (confOrder[a.confidence] !== confOrder[b.confidence]) {
+                return confOrder[a.confidence] - confOrder[b.confidence];
+            }
+            return Math.abs(a.distance) - Math.abs(b.distance);
+        });
+        
+        if (candidates.length > 0) {
+            trendlines.support = candidates[0];
+            trendlines.supportCandidates = candidates.slice(0, 6);
+        }
+    }
+    
+    // Generate resistance candidates (pairs of recent highs)
+    if (pivotHighs.length >= 2) {
+        const candidates = [];
+        for (let i = Math.max(0, pivotHighs.length - 6); i < pivotHighs.length - 1; i++) {
+            const idx1 = pivotHighs[i];
+            const idx2 = pivotHighs[i + 1];
+            if (idx2 > idx1) {
+                const slope = (highs[idx2] - highs[idx1]) / (idx2 - idx1);
+                const projectedResistance = highs[idx1] + slope * (data.length - 1 - idx1);
+                const distancePct = (projectedResistance / currentPrice - 1) * 100;
+                const { touches, violations } = countTouches(idx1, idx2, highs[idx1], highs[idx2], false);
+                
+                // Confidence: high if 3+ touches and no violations, medium if 2 touches
+                let confidence = 'low';
+                if (touches >= 3 && violations === 0) confidence = 'high';
+                else if (touches >= 2 && violations <= 1) confidence = 'medium';
+                
+                const points = generateLinePoints(idx1, idx2, highs[idx1], highs[idx2]);
+                
+                candidates.push({
+                    price: Math.round(projectedResistance * 100) / 100,
+                    slope: slope > 0 ? 'rising' : 'falling',
+                    slopeValue: Math.round(slope * 10000) / 10000,
+                    slopePerBar: (slope * 1).toFixed(4),
+                    distance: Math.round(distancePct * 100) / 100,
+                    touches,
+                    violations,
+                    confidence,
+                    points
+                });
+            }
+        }
+        
+        // Sort by confidence and proximity to current price
+        candidates.sort((a, b) => {
+            const confOrder = { high: 0, medium: 1, low: 2 };
+            if (confOrder[a.confidence] !== confOrder[b.confidence]) {
+                return confOrder[a.confidence] - confOrder[b.confidence];
+            }
+            return Math.abs(a.distance) - Math.abs(b.distance);
+        });
+        
+        if (candidates.length > 0) {
+            trendlines.resistance = candidates[0];
+            trendlines.resistanceCandidates = candidates.slice(0, 6);
+        }
+    }
+    
+    return trendlines;
+}
+
 function calcEMA(data, period) {
     const k = 2 / (period + 1); let ema = data[0].close; const r = [];
     for (let i = 1; i < data.length; i++) {
@@ -142,6 +295,8 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
     const [annotationVisibility, setAnnotationVisibility] = useState({ showLevels: true, showTrendlines: true, showStructures: true });
     const [drawingMode, setDrawingMode] = useState(false);
     const [currentDrawPoints, setCurrentDrawPoints] = useState([]);
+    const [calculatedTrendlines, setCalculatedTrendlines] = useState({ support: null, resistance: null, supportCandidates: [], resistanceCandidates: [] });
+    const [hiddenCandidates, setHiddenCandidates] = useState(new Set()); // Candidates hidden by user clicking
     const drawingModeRef = useRef(false);
     const drawnLineSeriesRef = useRef([]);
     const chartRef = useRef(null);
@@ -215,6 +370,10 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         if (localEndDate) uniqueData = uniqueData.filter(d => d.time <= new Date(localEndDate + 'T23:59:59').getTime() / 1000);
         if (uniqueData.length === 0) { chart.remove(); return; }
 
+        // Calculate trendlines from chart data
+        const trendlines = calculateTrendlines(uniqueData);
+        setCalculatedTrendlines(trendlines);
+
         // Pre-compute indicator lookup maps (time -> value) for tooltip
         const indicatorMaps = {};
 
@@ -240,6 +399,65 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                 candle.createPriceLine({ price, color: meta.color, lineWidth: 1, lineStyle: meta.style, axisLabelVisible: true, title: line.label || meta.label });
             }
         });
+
+        // Auto-calculated trendlines with slope (shown only if showTrendlines enabled)
+        // Show the best support/resistance trendlines
+        if (trendlines.support && annotationVisibility.showTrendlines) {
+            const series = chart.addLineSeries({ 
+                color: '#10b98199', 
+                lineWidth: 2.5, 
+                lineStyle: 0, 
+                title: `Support (${trendlines.support.slope} @ ${trendlines.support.slopePerBar}/bar)`, 
+                lastValueVisible: true, 
+                priceLineVisible: false 
+            });
+            series.setData(trendlines.support.points);
+        }
+        if (trendlines.resistance && annotationVisibility.showTrendlines) {
+            const series = chart.addLineSeries({ 
+                color: '#f9731699', 
+                lineWidth: 2.5, 
+                lineStyle: 0, 
+                title: `Resistance (${trendlines.resistance.slope} @ ${trendlines.resistance.slopePerBar}/bar)`, 
+                lastValueVisible: true, 
+                priceLineVisible: false 
+            });
+            series.setData(trendlines.resistance.points);
+        }
+
+        // Show all candidate trendlines by default; hiddenCandidates holds ones user clicked to hide
+        if (annotationVisibility.showTrendlines) {
+            // Support candidates
+            trendlines.supportCandidates?.forEach((candidate, idx) => {
+                const candKey = `sup_${idx}`;
+                if (!hiddenCandidates.has(candKey)) {
+                    const series = chart.addLineSeries({
+                        color: candidate.confidence === 'high' ? '#10b98166' : candidate.confidence === 'medium' ? '#10b98133' : '#10b98111',
+                        lineWidth: candidate.confidence === 'high' ? 2 : 1.5,
+                        lineStyle: 1, // dashed
+                        title: `Support (${candidate.slopePerBar}/bar, ${candidate.touches}t)`,
+                        lastValueVisible: false,
+                        priceLineVisible: false
+                    });
+                    series.setData(candidate.points);
+                }
+            });
+            // Resistance candidates
+            trendlines.resistanceCandidates?.forEach((candidate, idx) => {
+                const candKey = `res_${idx}`;
+                if (!hiddenCandidates.has(candKey)) {
+                    const series = chart.addLineSeries({
+                        color: candidate.confidence === 'high' ? '#f9731666' : candidate.confidence === 'medium' ? '#f9731633' : '#f9731611',
+                        lineWidth: candidate.confidence === 'high' ? 2 : 1.5,
+                        lineStyle: 1, // dashed
+                        title: `Resistance (${candidate.slopePerBar}/bar, ${candidate.touches}t)`,
+                        lastValueVisible: false,
+                        priceLineVisible: false
+                    });
+                    series.setData(candidate.points);
+                }
+            });
+        }
 
         // Deterministic setup annotations are kept separate from user lines.
         if (autoAnnotate && tradeAnalysis?.available) {
@@ -449,7 +667,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
             chart.remove();
             if (rsiChart) rsiChart.remove();
         };
-    }, [data, localStartDate, localEndDate, markers, indicators, priceLines, fibEnabled, fibHigh, fibLow, fibDir, height, autoAnnotate, tradeAnalysis, annotationVisibility]);
+    }, [data, localStartDate, localEndDate, markers, indicators, priceLines, fibEnabled, fibHigh, fibLow, fibDir, height, autoAnnotate, tradeAnalysis, annotationVisibility, hiddenCandidates]);
 
     // Sync drawingMode to ref so click handler always reads latest value
     useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
@@ -517,6 +735,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                 <div style={{ background: 'rgba(8,14,26,0.95)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                     <div style={{ display: 'flex', gap: '4px', padding: '6px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                         <button style={tabStyle(activeTab === 'indicators')} onClick={() => setActiveTab('indicators')}><Activity size={12} /> Indicators</button>
+                        <button style={tabStyle(activeTab === 'trendlines')} onClick={() => setActiveTab('trendlines')}><TrendingUp size={12} /> Trendlines</button>
                         <button style={tabStyle(activeTab === 'lines')} onClick={() => setActiveTab('lines')}><TrendingUp size={12} /> S/R Lines</button>
                         <button style={tabStyle(activeTab === 'fib')} onClick={() => setActiveTab('fib')}><GitFork size={12} /> Fibonacci</button>
                     </div>
@@ -530,6 +749,146 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                             <ToggleChip label="VWAP" enabled={indicators.vwap.enabled} color="#ec4899" onClick={() => toggleInd('vwap')} />
                             <IndBlock id="rsi" label="RSI (sub-panel)" color="#3b82f6" ind={indicators.rsi} hasPeriods onToggle={() => toggleInd('rsi')} onAdd={() => { }} onRemove={() => { }} onUpdate={(i, v) => updatePeriod('rsi', i, v)} />
                             <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', opacity: 0.5, alignSelf: 'center' }}>Click to toggle · Edit period numbers inline</span>
+                        </div>
+                    )}
+
+                    {activeTab === 'trendlines' && (
+                        <div style={{ padding: '8px 10px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', cursor: 'pointer' }}>
+                                    <input 
+                                        type="checkbox" 
+                                        checked={annotationVisibility.showTrendlines} 
+                                        onChange={e => setAnnotationVisibility({...annotationVisibility, showTrendlines: e.target.checked})} 
+                                        style={{ accentColor: '#10b981' }} 
+                                    />
+                                    <span style={{ color: annotationVisibility.showTrendlines ? '#10b981' : 'var(--text-secondary)', fontWeight: annotationVisibility.showTrendlines ? 'bold' : 'normal' }}>Show Auto Trendlines</span>
+                                </label>
+
+                                <details style={{ fontSize: '0.75rem', cursor: 'pointer', opacity: 0.8 }}>
+                                    <summary style={{ fontWeight: 600, marginBottom: '6px' }}>
+                                        Nearby slope candidates ({calculatedTrendlines.supportCandidates?.length || 0} support · {calculatedTrendlines.resistanceCandidates?.length || 0} resistance)
+                                        {hiddenCandidates.size > 0 && <span style={{ fontSize: '0.65rem', fontWeight: 400, color: 'var(--text-secondary)' }}> · {hiddenCandidates.size} hidden</span>}
+                                    </summary>
+                                    
+                                    {(calculatedTrendlines.supportCandidates?.length > 0 || calculatedTrendlines.resistanceCandidates?.length > 0) ? (
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '6px', marginTop: '8px', maxHeight: '300px', overflowY: 'auto', paddingRight: '4px' }}>
+                                            {[...(calculatedTrendlines.supportCandidates || []), ...(calculatedTrendlines.resistanceCandidates || [])].map((line, idx) => {
+                                                const isSupport = calculatedTrendlines.supportCandidates?.includes(line);
+                                                const candIdx = isSupport ? calculatedTrendlines.supportCandidates?.indexOf(line) : calculatedTrendlines.resistanceCandidates?.indexOf(line);
+                                                const candKey = isSupport ? `sup_${candIdx}` : `res_${candIdx}`;
+                                                const isVisible = !hiddenCandidates.has(candKey);
+                                                const confColor = line.confidence === 'high' ? '#10b981' : line.confidence === 'medium' ? '#f97316' : '#ef4444';
+                                                return (
+                                                    <div 
+                                                        key={idx} 
+                                                        onClick={() => setHiddenCandidates(prev => {
+                                                            const next = new Set(prev);
+                                                            if (next.has(candKey)) next.delete(candKey);
+                                                            else next.add(candKey);
+                                                            return next;
+                                                        })}
+                                                        style={{ 
+                                                            background: isVisible ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.04)', 
+                                                            border: `1px solid ${isVisible ? confColor + '66' : confColor + '33'}`, 
+                                                            borderRadius: '6px', 
+                                                            padding: '6px 8px', 
+                                                            fontSize: '0.7rem', 
+                                                            lineHeight: '1.4',
+                                                            cursor: 'pointer',
+                                                            transition: 'all 0.2s',
+                                                            boxShadow: isVisible ? `0 0 8px ${confColor}44` : 'none'
+                                                        }}
+                                                    >
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                                                            <span style={{ width: '12px', height: '12px', borderRadius: '2px', background: confColor, opacity: isVisible ? 1 : 0.5 }} />
+                                                            <span style={{ color: confColor, fontWeight: 'bold' }}>{isSupport ? 'support' : 'resistance'}</span>
+                                                            <span style={{ color: confColor, fontSize: '0.65rem', textTransform: 'uppercase', fontWeight: 600, marginLeft: 'auto' }}>· {line.confidence}</span>
+                                                        </div>
+                                                        <div style={{ color: 'var(--text-secondary)', marginBottom: '3px' }}>
+                                                            Now {line.price} · {line.distance > 0 ? '+' : ''}{line.distance}% away
+                                                        </div>
+                                                        <div style={{ color: 'var(--text-secondary)' }}>
+                                                            Slope {line.slopePerBar}/bar · {line.touches} touches · {line.violations} violations
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                                <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', opacity: 0.5, marginTop: '4px', textAlign: 'center' }}>
+                                                    Click a candidate to hide/show it on chart
+                                                </div>
+                                            </div>
+                                    ) : (
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', opacity: 0.6, fontStyle: 'italic', marginTop: '6px' }}>
+                                            Not enough pivot points detected.
+                                        </div>
+                                    )}
+                                </details>
+
+                                {calculatedTrendlines.support && (
+                                    <div style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px', padding: '8px 10px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981' }} />
+                                            <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#10b981' }}>Support</span>
+                                        </div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '0.75rem' }}>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Level:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>${calculatedTrendlines.support.price}</span>
+                                            </div>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Slope:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: calculatedTrendlines.support.slope === 'rising' ? '#10b981' : '#ef4444' }}>
+                                                    {calculatedTrendlines.support.slope === 'rising' ? '↗' : '↘'} {calculatedTrendlines.support.slope}
+                                                </span>
+                                            </div>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Distance:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{calculatedTrendlines.support.distance > 0 ? '+' : ''}{calculatedTrendlines.support.distance}%</span>
+                                            </div>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Touches:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{calculatedTrendlines.support.touches} / {calculatedTrendlines.support.violations} violations</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {calculatedTrendlines.resistance && (
+                                    <div style={{ background: 'rgba(249, 115, 22, 0.1)', border: '1px solid rgba(249, 115, 22, 0.3)', borderRadius: '8px', padding: '8px 10px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#f97316' }} />
+                                            <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#f97316' }}>Resistance</span>
+                                        </div>
+                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '0.75rem' }}>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Level:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>${calculatedTrendlines.resistance.price}</span>
+                                            </div>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Slope:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: calculatedTrendlines.resistance.slope === 'rising' ? '#10b981' : '#ef4444' }}>
+                                                    {calculatedTrendlines.resistance.slope === 'rising' ? '↗' : '↘'} {calculatedTrendlines.resistance.slope}
+                                                </span>
+                                            </div>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Distance:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{calculatedTrendlines.resistance.distance > 0 ? '+' : ''}{calculatedTrendlines.resistance.distance}%</span>
+                                            </div>
+                                            <div>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Touches:</span><br/>
+                                                <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{calculatedTrendlines.resistance.touches} / {calculatedTrendlines.resistance.violations} violations</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {!calculatedTrendlines.support && !calculatedTrendlines.resistance && (
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', opacity: 0.6, fontStyle: 'italic' }}>
+                                        Not enough pivot points detected to calculate trendlines. Need at least 40 bars and 2 pivot points per trendline.
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
 

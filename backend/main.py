@@ -10877,6 +10877,55 @@ UNIFIED ASSISTANT CONFIG:
                 done_event['needs_user_input'] = True
                 done_event['clarification_question'] = clarification_question
             
+            # Generate follow-up suggestions via a quick LLM call
+            try:
+                recent_user_msgs = [h.get("content", "") for h in (request.history or [])[-4:] if h.get("role") == "user"]
+                suggestions_prompt = (
+                    "Given this trading assistant conversation, suggest exactly 3 short follow-up actions "
+                    "the user might want to take next. Return ONLY a JSON array of strings, nothing else. "
+                    "Each suggestion should be a concise actionable question or command (under 15 words). "
+                    "Vary the suggestions: one deeper analysis, one related action, one broader context.\n\n"
+                    f"User's last message: {request.message}\n"
+                    f"Previous messages: {'; '.join(recent_user_msgs[-3:])}\n"
+                    f"Tools used: {', '.join(set(tools_used)) or 'none'}\n\n"
+                    'Return format: ["suggestion 1", "suggestion 2", "suggestion 3"]'
+                )
+                suggestions_llm = llm.bind(max_tokens=200, temperature=0.7)
+                from langchain_core.messages import HumanMessage as SuggestionMessage
+                suggestions_response = suggestions_llm.invoke([SuggestionMessage(content=suggestions_prompt)])
+                raw_text = getattr(suggestions_response, "content", "") or ""
+                # Extract JSON array from response (strip markdown fences if present)
+                import re as _re
+                json_match = _re.search(r'\[.*?\]', raw_text, _re.DOTALL)
+                if json_match:
+                    suggestions = json.loads(json_match.group())
+                    if isinstance(suggestions, list) and len(suggestions) > 0:
+                        done_event['suggestions'] = [str(s).strip() for s in suggestions[:3] if s]
+            except Exception as sug_err:
+                logger.warning(f"Suggestions LLM call failed: {sug_err}")
+            
+            # Fallback: heuristic suggestions if LLM call didn't produce any
+            if 'suggestions' not in done_event or not done_event.get('suggestions'):
+                tools_set = set(tools_used)
+                fallback = []
+                if any(t in tools_set for t in ('get_quote', 'get_technicals')):
+                    fallback.append("Run a full technical analysis with RSI and MACD")
+                    fallback.append("Compare this with sector/industry peers")
+                if any(t in tools_set for t in ('run_backtest', 'generate_strategy')):
+                    fallback.append("Compare against buy-and-hold for the same period")
+                    fallback.append("Try a different strategy approach")
+                if any(t in tools_set for t in ('get_news', 'web_search')):
+                    fallback.append("Dig deeper into the catalysts mentioned")
+                if any(t in tools_set for t in ('get_market_overview', 'get_industry_heatmap')):
+                    fallback.append("Show the weakest industries today")
+                if not fallback:
+                    fallback = [
+                        "Analyze my watchlist technicals",
+                        "What's moving in the market today?",
+                        "Generate a strategy and backtest it"
+                    ]
+                done_event['suggestions'] = fallback[:3]
+            
             yield f"data: {json.dumps(done_event)}\n\n"
             
         except asyncio.CancelledError:

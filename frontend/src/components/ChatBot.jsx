@@ -2038,7 +2038,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 }
                                 const finalCommentary = getThreadState(threadId).liveCommentary || [];
                                 const usage = data.usage || null;
-                                updateMessage(threadId, msgId, responseText, null, thinking || null, steps, toolData, null, null, data.task_id, finalCommentary.length ? finalCommentary : null, usage);
+                                const suggestions = data.suggestions || null;
+                                console.log('[suggestions] done event suggestions:', suggestions, 'data keys:', Object.keys(data));
+                                updateMessage(threadId, msgId, responseText, null, thinking || null, steps, toolData, null, null, data.task_id, finalCommentary.length ? finalCommentary : null, usage, suggestions ? { suggestions } : {});
                                 
                                 // Check if agent is waiting for user clarification
                                 if (data.needs_user_input && data.clarification_question) {
@@ -4466,6 +4468,28 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                             </div>
                                         )}
                                     </div>
+
+                                    {/* follow-up suggestion chips */}
+                                    {assistantMessage && message.suggestions?.length > 0 && !String(message.id || '').startsWith('init-') && (
+                                        <div style={{ marginTop: '0.6rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+                                            {message.suggestions.map((s, i) => (
+                                                <button
+                                                    key={i}
+                                                    onClick={() => { setInput(s); setTimeout(() => mainInputRef.current?.focus(), 50); }}
+                                                    style={{
+                                                        fontSize: '0.72rem', padding: '0.3rem 0.65rem', borderRadius: '999px',
+                                                        border: '1px solid rgba(96,165,250,0.25)', background: 'rgba(59,130,246,0.08)',
+                                                        color: 'var(--brand-blue)', cursor: 'pointer', whiteSpace: 'nowrap',
+                                                        transition: 'all 0.15s', lineHeight: 1.3,
+                                                    }}
+                                                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(59,130,246,0.18)'; e.currentTarget.style.borderColor = 'rgba(96,165,250,0.45)'; }}
+                                                    onMouseLeave={e => { e.currentTarget.style.background = 'rgba(59,130,246,0.08)'; e.currentTarget.style.borderColor = 'rgba(96,165,250,0.25)'; }}
+                                                >
+                                                    {s}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
 
                                     {/* progress bar for async tasks */}
                                     {message.progress && (

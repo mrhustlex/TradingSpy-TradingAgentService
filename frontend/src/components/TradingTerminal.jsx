@@ -25,7 +25,7 @@ import {
     CheckSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { DATA_SERVICE, BACKTEST_SERVICE } from '../config';
+import { DATA_SERVICE, BACKTEST_SERVICE, INTELLIGENCE_SERVICE } from '../config';
 import { formatDatasetName, cleanTicker } from '../utils/formatters';
 
 const ChartViewer = lazy(() => import('./ChartViewer'));
@@ -165,9 +165,13 @@ const MAX_BATTLE_STRATEGIES = 5;
 
     // Downloader form
     const [tickerInput, setTickerInput] = useState('');
+    const [tickerSuggestions, setTickerSuggestions] = useState([]);
     const [freqInput, setFreqInput] = useState('1d');
     const [periodInput, setPeriodInput] = useState('max');
     const [stakeRange, setStakeRange] = useState('10, 50, 95');
+    const [showTickerSuggestions, setShowTickerSuggestions] = useState(false);
+    const tickerInputRef = useRef(null);
+    const tickerDebounceRef = useRef(null);
     const [trailRange, setTrailRange] = useState('0.0, 0.05, 0.15');
     const [syncingTicker, setSyncingTicker] = useState(null);
     const [startDate, setStartDate] = useState('');
@@ -243,10 +247,39 @@ const MAX_BATTLE_STRATEGIES = 5;
             notify(`Download quest started for ${tickerInput.toUpperCase()}`, 'blue');
             setShowDownloader(false);
             setTickerInput('');
+            setShowTickerSuggestions(false);
         } catch (e) {
             notify("Download initiation failed", 'red');
         }
         setDownloading(false);
+    };
+
+    // Search tickers via yfinance backend
+    const searchTickers = async (query) => {
+        if (!query || query.length < 1) { setTickerSuggestions([]); return; }
+        try {
+            const res = await axios.get(`${INTELLIGENCE_SERVICE}/search`, { params: { q: query } });
+            setTickerSuggestions(res.data.results || []);
+        } catch { setTickerSuggestions([]); }
+    };
+
+    // Handle ticker input change with debounce
+    const handleTickerInputChange = (e) => {
+        const value = e.target.value;
+        setTickerInput(value);
+        if (tickerDebounceRef.current) clearTimeout(tickerDebounceRef.current);
+        if (value.length > 0) {
+            tickerDebounceRef.current = setTimeout(() => searchTickers(value), 250);
+        } else {
+            setTickerSuggestions([]);
+        }
+    };
+
+    // Handle suggestion selection
+    const handleSelectSuggestion = (symbol) => {
+        setTickerInput(symbol.toUpperCase());
+        setTickerSuggestions([]);
+        setShowTickerSuggestions(false);
     };
 
     const syncTaskRef = useRef(null);
@@ -1011,15 +1044,59 @@ const MAX_BATTLE_STRATEGIES = 5;
                                 <button className="btn btn-ghost btn-xs" onClick={() => setShowDownloader(false)}><X size={16} /></button>
                             </div>
 
-                            <div className="form-group" style={{ marginBottom: '1rem' }}>
+                            <div className="form-group" style={{ marginBottom: '1rem', position: 'relative' }}>
                                 <label>Symbol (AAPL, TSLA, BTC-USD)</label>
                                 <input
+                                    ref={tickerInputRef}
                                     className="input"
                                     value={tickerInput}
-                                    onChange={e => setTickerInput(e.target.value)}
-                                    placeholder="Enter ticker..."
+                                    onChange={handleTickerInputChange}
+                                    onFocus={() => { if (tickerInput.length > 0) { setShowTickerSuggestions(true); searchTickers(tickerInput); } }}
+                                    onBlur={() => setTimeout(() => setShowTickerSuggestions(false), 150)}
+                                    placeholder="Search any ticker..."
                                     autoFocus
+                                    style={{ position: 'relative', zIndex: 10 }}
                                 />
+                                {showTickerSuggestions && tickerSuggestions.length > 0 && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: -5 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -5 }}
+                                        transition={{ duration: 0.15 }}
+                                        style={{
+                                            position: 'absolute',
+                                            top: '100%',
+                                            left: 0,
+                                            right: 0,
+                                            background: 'var(--card-bg)',
+                                            border: '1px solid rgba(255,255,255,0.1)',
+                                            borderRadius: '8px',
+                                            marginTop: '4px',
+                                            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+                                            zIndex: 1000,
+                                            maxHeight: '240px',
+                                            overflowY: 'auto',
+                                        }}
+                                    >
+                                        {tickerSuggestions.map((item, idx) => (
+                                            <div
+                                                key={idx}
+                                                onMouseDown={() => handleSelectSuggestion(item.symbol)}
+                                                style={{
+                                                    padding: '0.65rem 1rem',
+                                                    cursor: 'pointer',
+                                                    borderBottom: idx < tickerSuggestions.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none',
+                                                    transition: 'background 0.15s',
+                                                }}
+                                                onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                                                onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                            >
+                                                <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{item.symbol}</div>
+                                                <div style={{ fontSize: '0.75rem', opacity: 0.65, marginTop: '2px' }}>{item.name}</div>
+                                            </div>
+                                        ))}
+                                    </motion.div>
+                                )}
                             </div>
 
                             <div className="form-row">

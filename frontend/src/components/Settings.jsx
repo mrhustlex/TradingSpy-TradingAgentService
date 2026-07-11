@@ -125,6 +125,7 @@ const Settings = ({ notify }) => {
     const [saving, setSaving] = useState(false);
     const [showModelHelp, setShowModelHelp] = useState(false);
     const [showResetConfirm, setShowResetConfirm] = useState(false);
+    const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
     const [resetting, setResetting] = useState(false);
     const [resetOptions, setResetOptions] = useState({
         strategies: true,
@@ -399,6 +400,18 @@ const Settings = ({ notify }) => {
                 {/* OTHER SETTINGS */}
                 <ExpandableSection label="3. Other Settings - Assistant Outputs" icon={<Server size={20} />} color="var(--brand-blue)" defaultOpen={true}>
                     <div style={{ display: 'grid', gap: '0.85rem' }}>
+                        <div style={{ marginBottom: '0.5rem' }}>
+                            <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                                style={{ fontSize: '0.75rem' }}
+                            >
+                                {showAdvancedSettings ? '▼' : '▶'} Advanced: Remote Agent & Endpoints
+                            </button>
+                        </div>
+
+                        {showAdvancedSettings && (
+                        <div style={{ display: 'grid', gap: '0.85rem' }}>
                         {[
                             {
                                 key: 'enable_openai_compatible_output',
@@ -519,6 +532,8 @@ const Settings = ({ notify }) => {
                                 Enable only for trusted local or authenticated clients.
                             </span>
                         </div>
+                        </div>
+                        )}
                     </div>
                 </ExpandableSection>
 
