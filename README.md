@@ -52,22 +52,6 @@ TradingSpy is designed with a hybrid approach: traditional data visualisation fo
 
 <!-- TODO: Add individual agent GIFs per row above (strategy-race.gif, signal-analysis.gif, stock-screening.gif, chat.gif) -->
 
-<p align="center">
-  <img src="docs/images/agent/agent.gif" alt="Agent in action" width="80%"/>
-</p>
-
-<p align="center">
-  <img src="docs/images/UI/Strategy Generation.png" alt="Strategy Generation" width="80%"/>
-</p>
-
-<p align="center">
-  <img src="docs/images/UI/Trading Signal.png" alt="Trading Signal" width="80%"/>
-</p>
-
-<p align="center">
-  <img src="docs/images/UI/Price Prediction.png" alt="Price Prediction" width="80%"/>
-</p>
-
 #### Background Runs
 
 If the request involves long-running work, the UI creates a background run through `/api/agent/runs`. Background runs are stored locally, visible in the Task Center, and support:
@@ -92,16 +76,24 @@ Not every question needs an agent. TradingSpy ships a full market dashboard for 
 | Component | Details |
 | --- | --- |
 | **Sector Heatmap** | Color-coded grid of 25+ industry proxy ETFs grouped by sector. 16 time periods (1 min – max + YTD), extended hours toggle, search/filter, custom groups, and an **Explain** button that sends the heatmap to the AI assistant for analysis. Two display modes: industry ETFs or watchlist stocks. |
-| **Indices Banner** | Top-of-page bar showing S&P 500, Dow Jones, NASDAQ 100, and Russell 2000 with live prices and percentage changes. |
 | **Industry Movements** | Tracks individual stock price changes across 12 time windows (1 min to 1 year) for 68+ major US stocks. Universe presets: High Cap, Semis, Software/AI, Leverage. |
-| **Watchlist & Intelligence** | Auto-sync watchlists, real-time batch quotes, deep-dive panel (company info, technicals, news, insider activity), and embedded candlestick charts. |
+| **Stock Prediction** | Probabilistic price paths with 80% uncertainty bands for any ticker. Reads recent OHLCV bars, derives momentum, trend, mean-reversion, RSI, volume, and volatility context, then renders a central path with one-click CSV export. |
+| **Trading Agent** | AI-powered chat agent that analyzes your market data, answers questions, generates strategies, and runs backtests — all from a single conversation thread. |
 
 <p align="center">
-  <img src="docs/images/UI/Market Overview.png" alt="Market Overview" width="80%"/>
+  <img src="docs/images/UI/Market Overview.png" alt="Sector Heatmap" width="80%"/>
 </p>
 
 <p align="center">
   <img src="docs/images/UI/Movement.png" alt="Industry Movements" width="80%"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/UI/Price Prediction.png" alt="Stock Prediction" width="80%"/>
+</p>
+
+<p align="center">
+  <img src="docs/images/agent/agent.gif" alt="Trading Agent" width="80%"/>
 </p>
 
 ---
