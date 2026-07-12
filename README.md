@@ -7,6 +7,9 @@ TradingSpy is an open-source research workstation for traders and builders who w
 It is not a broker and it does not place trades. It is a local research environment for analysis, backtesting, and strategy iteration. Fully open-source, zero data privacy concerns, and free of charge.
 
 <p align="center">
+  <a href="https://mrhustlex.github.io/tradingspy">
+    <img src="https://img.shields.io/badge/Landing%20Page-0ea5e9?style=for-the-badge&logo=github&logoColor=white" alt="Landing Page"/>
+  </a>
   <a href="https://buymeacoffee.com/mrhustlex">
     <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"/>
   </a>
