@@ -202,6 +202,8 @@ docker compose up -d --build
 | API docs | http://localhost:8000/docs |
 | SearXNG | http://localhost:8080 |
 
+If any of these ports are already in use, set `BACKEND_PORT`, `FRONTEND_PORT`, and/or `SEARXNG_PORT` in `.env` (see `.env.example`) and re-run `docker compose up -d --build`. Only the host-side port changes; the app is reachable at the new port(s) instead.
+
 ### 3. Stop
 
 ```bash
@@ -226,6 +228,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 > Use Python 3.11. The pinned data-science dependencies are not reliable with Python 3.13.
 
+> If port 8000 is taken, set `BACKEND_PORT` in `.env` and pass the same value to `--port` above — the backend also uses `BACKEND_PORT` for its internal self-calls, so the two need to match.
+
 ### Frontend
 
 ```bash
@@ -233,6 +237,8 @@ cd frontend
 npm ci
 npm run dev
 ```
+
+If port 5173 (or the backend API port) is taken, copy `frontend/.env.example` to `frontend/.env` and set `VITE_DEV_PORT` / `VITE_API_PORT` (the latter must match the backend's `BACKEND_PORT`).
 
 Open http://localhost:5173.
 

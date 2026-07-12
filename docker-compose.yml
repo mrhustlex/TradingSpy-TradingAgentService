@@ -7,7 +7,7 @@ services:
       cache_from:
         - tradingspy-backend:latest
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       GOOGLE_AI_STUDIO_API_KEY: ${GOOGLE_AI_STUDIO_API_KEY:-}
@@ -41,10 +41,12 @@ services:
     image: tradingspy-frontend:latest
     build:
       context: ./frontend
+      args:
+        VITE_API_PORT: ${BACKEND_PORT:-8000}
       cache_from:
         - tradingspy-frontend:latest
     ports:
-      - "127.0.0.1:3000:80"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -56,7 +58,7 @@ services:
     image: searxng/searxng:latest
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${SEARXNG_PORT:-8080}:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     environment:

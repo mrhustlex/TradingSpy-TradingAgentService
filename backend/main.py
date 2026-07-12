@@ -59,6 +59,10 @@ from acp_agent import router as acp_router
 # Load environment variables
 load_dotenv()
 
+# Port this backend listens on and calls itself on (for manual/non-Docker runs
+# on a non-default port; Docker keeps the in-container port fixed at 8000).
+BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
+
 # Setup logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -6825,11 +6829,11 @@ NO markdown, NO code fences, NO extra text. Start with {{ and end with }}. If yo
                 path = action.get("path", "")
                 body = action.get("body", {})
                 if method == "POST":
-                    resp = await http_client.post(f"http://localhost:8000{path}", json=body, timeout=30.0)
+                    resp = await http_client.post(f"http://localhost:{BACKEND_PORT}{path}", json=body, timeout=30.0)
                 else:
                     # Pass body as query params for GET requests (filter out empty values)
                     params = {k: v for k, v in body.items() if v not in (None, "", [], {})} if body else {}
-                    resp = await http_client.get(f"http://localhost:8000{path}", params=params, timeout=30.0)
+                    resp = await http_client.get(f"http://localhost:{BACKEND_PORT}{path}", params=params, timeout=30.0)
 
                 if resp.status_code >= 400:
                     step.update({"status": "error", "note": f"HTTP {resp.status_code}"})
@@ -6919,7 +6923,7 @@ NO markdown, NO code fences, NO extra text. Start with {{ and end with }}. If yo
             is_generate = "/generate" in path
             is_backtest = "/backtest/backtest" in path
 
-            poll_url = f"http://localhost:8000/api/backtest/results/{task_id}"
+            poll_url = f"http://localhost:{BACKEND_PORT}/api/backtest/results/{task_id}"
             deadline = asyncio.get_event_loop().time() + (300 if is_generate else 300)
 
             last_pct = -1
@@ -7701,8 +7705,8 @@ async def openai_chat_completions(request: OpenAIChatRequest):
         
         # Streaming: route to the appropriate streaming endpoint
         stream_path = {
-            "strands": "http://localhost:8000/api/backtest/ai/chat-strands",
-            "agentic": "http://localhost:8000/api/backtest/ai/chat-agentic",
+            "strands": f"http://localhost:{BACKEND_PORT}/api/backtest/ai/chat-strands",
+            "agentic": f"http://localhost:{BACKEND_PORT}/api/backtest/ai/chat-agentic",
         }
 
         if request.stream:
@@ -11313,7 +11317,7 @@ if __name__ == "__main__":
         logger.info(f"Restored auto-sync job: every {interval_minutes} minutes")
     
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        uvicorn.run(app, host="0.0.0.0", port=BACKEND_PORT)
     finally:
         if scheduler.running:
             scheduler.shutdown()
