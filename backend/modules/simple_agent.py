@@ -107,7 +107,7 @@ Respond in JSON format:
             if tool_results:
                 final_prompt = f"""User message: {message}
 
-Tool results:
+Data retrieved:
 {json.dumps(tool_results, indent=2)}
 
 Please provide a natural, conversational response based on this data. Be direct, insightful, and talk like a knowledgeable trader. No bullet points, no corporate speak.

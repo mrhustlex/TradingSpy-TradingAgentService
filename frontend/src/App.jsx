@@ -52,13 +52,13 @@ const normalizeSupportedProvider = (provider) => {
   const p = (provider || 'google_ai_studio').trim().toLowerCase().replace(/[-\s]/g, '_');
   if (p === 'googleaistudio' || p === 'google_ai' || p === 'gemini') return 'google_ai_studio';
   if (p === 'lite_llm' || p === 'lite') return 'litellm';
-  return ['google_ai_studio', 'mistral', 'openrouter', 'litellm', 'ollama'].includes(p) ? p : 'google_ai_studio';
+  return ['google_ai_studio', 'mistral', 'openrouter', 'nvidia', 'litellm', 'ollama'].includes(p) ? p : 'google_ai_studio';
 };
 const isSupportedProviderInput = (provider) => {
   const p = (provider || '').trim().toLowerCase().replace(/[-\s]/g, '_');
   let normalized = p === 'googleaistudio' || p === 'google_ai' || p === 'gemini' ? 'google_ai_studio' : p;
   if (normalized === 'lite_llm' || normalized === 'lite') normalized = 'litellm';
-  return ['google_ai_studio', 'mistral', 'openrouter', 'litellm', 'ollama'].includes(normalized);
+  return ['google_ai_studio', 'mistral', 'openrouter', 'nvidia', 'litellm', 'ollama'].includes(normalized);
 };
 const isAgentTerminal = (status) => AGENT_TERMINAL_STATUSES.has(status);
 const formatAgentElapsed = (seconds) => {

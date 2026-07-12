@@ -3390,6 +3390,9 @@ def _sanitize_assistant_response(text: str) -> str:
         cleaned = cleaned.replace(raw, replacement)
     cleaned = re.sub(r"\bNaN values?\b", "unavailable values", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bNaN\b", "unavailable", cleaned)
+    cleaned = re.sub(r"Tool execution results:\s*", "", cleaned)
+    cleaned = re.sub(r"Tool results:\s*", "", cleaned)
+    cleaned = re.sub(r"\b\w+_args=\{[^}]*\}:\s*\n?", "", cleaned)
     return cleaned
 
 
@@ -3771,6 +3774,28 @@ async def agent_run_task(run_id: str, request: AgentRunRequest):
             return
 
         if request.workflow == "market_review":
+            _set_agent_plan_step(run_id, "market_review", "running", "Generating market review summary")
+            _update_agent_run(run_id, progress=90, current_step="Generating market review summary")
+            await _flush_agent_updates()
+            try:
+                provider = request.provider or "openai"
+                model = request.model or "gpt-4o-mini"
+                api_key = request.api_key or ""
+                llm, _ = build_langchain_chat_model(provider, model, api_key, None, temperature=0)
+                review_context = f"User request: {request.prompt or 'market review'}\n\nMarket context: {json.dumps(market_context, default=str)[:3000]}"
+                review_messages = [
+                    SystemMessage(content="You are a trading assistant. Synthesize the market data into a concise, natural response. Talk like a knowledgeable friend who trades. Do not dump raw data — highlight what matters."),
+                    HumanMessage(content=review_context),
+                ]
+                review_response = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, lambda: llm.invoke(review_messages)),
+                    timeout=30,
+                )
+                summary = getattr(review_response, "content", "") or "Market review complete."
+                _update_agent_run(run_id, summary_text=summary)
+            except Exception as e:
+                logger.warning(f"Market review LLM summary failed: {e}")
+                summary = "Market review complete. Check the market overview and heatmap for details."
             _set_agent_plan_step(run_id, "market_review", "completed", "Market review complete")
             _update_agent_run(run_id, status="completed", progress=100, current_step="Market review complete")
             _append_agent_event(run_id, "complete", "Market review complete")
@@ -7359,7 +7384,7 @@ async def chat_langgraph(request: AIChatRequest):
                         break
             
             # Build tool summary and call LLM again
-            tool_summary = "Tool results:\n"
+            tool_summary = ""
             for tool_name, result in tool_data.items():
                 tool_summary += f"\n{tool_name}:\n{json.dumps(result, indent=2)[:500]}\n"
             
@@ -10322,6 +10347,7 @@ UNIFIED ASSISTANT CONFIG:
 - In final answers, never mention internal tool/function names such as get_market_overview, get_industry_heatmap, web_search, read_market_data, or read_candles. Use user-facing labels like market overview data, industry heatmap, news search, local dataset, or candle data.
 - If a data field is unavailable, say unavailable or missing; do not expose raw values like NaN.
 - Do not expose chain-of-thought. Short process summaries are okay; detailed internal reasoning is not needed.
+- The data section preceding this prompt is for your context only. Never echo, quote, reproduce, or reference the raw data block, JSON arguments, or field names in your response. Synthesize the information into natural language.
 - Ask confirmation before expensive, destructive, or long-running actions unless the user explicitly requested them.
 - Explicit requests to download data, generate a strategy, run a backtest, or optimize may be executed.
 - For "explain/review/show strategy code" requests, stay read-only: use list_available_strategies and get_strategy_code, then explain the actual saved code. Do not generate, optimize, or backtest unless the user explicitly asks to run work.
@@ -10353,7 +10379,6 @@ UNIFIED ASSISTANT CONFIG:
                 yield f"data: {json.dumps({'type': 'error', 'content': f'Provider setup failed for {provider}: {provider_error}'})}\n\n"
                 return
 
-            )
             
             # PHASE 1: THOUGHT - Visible process summary, scaled by user preference.
             if thinking_detail != "brief":
@@ -10627,11 +10652,11 @@ UNIFIED ASSISTANT CONFIG:
                         logger.info(f"✓ Tool {tool_name} executed")
                 
                 # Build tool summary for context
-                tool_summary = "Tool execution results:\n"
+                tool_summary = ""
                 for record in tool_records:
                     record_payload = record["result"] if record["result"] is not None else {"error": record["error"]}
                     tool_summary += (
-                        f"\n{record['tool']} args={json.dumps(record['args'], default=str)}:\n"
+                        f"\n{record['tool']}:\n"
                         f"{json.dumps(record_payload, indent=2, default=str)[:tool_result_limit]}\n"
                     )
 
@@ -11084,7 +11109,7 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                         conversation_history.append(AIMessage(content=response.content))
                     
                     # Add tool results as user message
-                    tool_summary = "Tool execution results:\n"
+                    tool_summary = ""
                     for tr in tool_results:
                         if tr["error"]:
                             tool_summary += f"\n{tr['tool_name']}: ERROR - {tr['error']}"

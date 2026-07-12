@@ -211,7 +211,7 @@ class StrandsAgentLoop:
                     # Convert response to AIMessage to avoid tool_calls mismatch
                     conversation_history.append(AIMessage(content=response.content if hasattr(response, 'content') else ""))
                     
-                    tool_summary = "Tool execution results:\n"
+                    tool_summary = ""
                     for tr in tool_results:
                         if tr["error"]:
                             tool_summary += f"\n{tr['tool_name']}: ERROR - {tr['error']}"

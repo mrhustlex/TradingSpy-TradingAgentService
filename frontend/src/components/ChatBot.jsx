@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, Suspense, lazy } from 'react';
 import axios from 'axios';
+import { toPng } from 'html-to-image';
 import { Send, Bot, User, Wand2, Play, Database, RefreshCw, Copy, Check, Trash2, MessageSquare, X, StopCircle, Plus, Edit2, Square, Share, Download, FileText, Printer, Eye, EyeOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE, BACKTEST_SERVICE, DATA_SERVICE, OPTIMIZER_SERVICE, SETTINGS_URL, INTELLIGENCE_SERVICE } from '../config';
@@ -581,6 +582,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const [apiPanelOpen, setApiPanelOpen] = useState(false);
     const [showApiKey, setShowApiKey] = useState(false);
     const [agentRun, setAgentRun] = useState(null);
+    const [imagePreview, setImagePreview] = useState(null);
     const [agentRunLoading, setAgentRunLoading] = useState(false);
     const [agentNow, setAgentNow] = useState(Date.now());
     const [agentConnectionIssue, setAgentConnectionIssue] = useState('');
@@ -1512,13 +1514,45 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         return `${prompt}\n\nRecent agent run context for resolving follow-up references like "this", "that", "above", "the issue", "rate limited", or "what did you do":\n${agentContexts.map(item => `- ${item.content}`).join('\n')}\n\nUse the most recent agent run when the user asks a vague follow-up. If the latest run failed or found no deployable strategy, explain the rejection/error reasons from that run. If the user asks about rate limits, mention provider errors from the recent run when present.`;
     };
 
-    const copyToClipboard = async (text, msgId) => {
+    const TRADINGSPY_FOOTER = '\n\n---\nInsight by TradingSpy (https://github.com/mrhustlex/TradingSpy-TradingAgentService)';
+
+    const markdownToPlainText = (md) => {
+        if (!md) return '';
+        let t = md;
+        t = t.replace(/^#{1,6}\s+/gm, '');
+        t = t.replace(/\*\*(.+?)\*\*/g, '$1');
+        t = t.replace(/\*(.+?)\*/g, '$1');
+        t = t.replace(/__(.+?)__/g, '$1');
+        t = t.replace(/_(.+?)_/g, '$1');
+        t = t.replace(/~~(.+?)~~/g, '$1');
+        t = t.replace(/`{3,}[\s\S]*?`{3,}/g, (m) => m.replace(/`{3,}\w*\n?/g, '').replace(/`{3,}/g, '').trim());
+        t = t.replace(/`([^`]+)`/g, '$1');
+        t = t.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+        t = t.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
+        t = t.replace(/^>\s+/gm, '');
+        t = t.replace(/^[-*+]\s+/gm, '• ');
+        t = t.replace(/^(\d+)\.\s+/gm, '$1. ');
+        t = t.replace(/^---+$/gm, '');
+        t = t.replace(/\|/g, (m, offset, str) => {
+            const before = str.slice(0, offset);
+            const lineStart = before.lastIndexOf('\n');
+            const line = before.slice(lineStart + 1);
+            if (/^\|?[\s-:|]+\|?$/.test(line)) return '';
+            return m;
+        });
+        t = t.replace(/\n{3,}/g, '\n\n');
+        return t.trim();
+    };
+
+    const copyToClipboard = async (text, msgId, addFooter = false) => {
         try {
+            const plain = markdownToPlainText(text);
+            const textToCopy = addFooter ? plain + TRADINGSPY_FOOTER : plain;
             if (navigator.clipboard?.writeText && window.isSecureContext) {
-                await navigator.clipboard.writeText(text);
+                await navigator.clipboard.writeText(textToCopy);
             } else {
                 const textArea = document.createElement('textarea');
-                textArea.value = text;
+                textArea.value = textToCopy;
                 textArea.style.position = 'fixed';
                 textArea.style.opacity = '0';
                 document.body.appendChild(textArea);
@@ -1532,6 +1566,76 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         } catch (error) {
             notify?.(`Copy failed: ${error?.message || 'clipboard access was denied'}`, 'error');
         }
+    };
+
+    const exportMessageAsImage = async (messageId, messageContent) => {
+        try {
+            const node = document.getElementById(`msg-bubble-${messageId}`);
+            if (!node) return;
+            const dataUrl = await toPng(node, {
+                backgroundColor: '#0a0e1a',
+                pixelRatio: 2,
+                style: { borderRadius: '8px' },
+            });
+            const img = new Image();
+            img.src = dataUrl;
+            await new Promise(r => { img.onload = r; });
+
+            const logoImg = new Image();
+            logoImg.src = '/logo.png';
+            await new Promise((resolve) => {
+                logoImg.onload = resolve;
+                logoImg.onerror = resolve;
+            });
+            const hasLogo = logoImg.complete && logoImg.naturalWidth > 0;
+
+            const canvas = document.createElement('canvas');
+            const footerHeight = hasLogo ? 110 : 64;
+            canvas.width = img.width;
+            canvas.height = img.height + footerHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            ctx.fillStyle = '#0a0e1a';
+            ctx.fillRect(0, img.height, canvas.width, footerHeight);
+            ctx.strokeStyle = 'rgba(148,163,184,0.18)';
+            ctx.beginPath();
+            ctx.moveTo(16, img.height + 1);
+            ctx.lineTo(canvas.width - 16, img.height + 1);
+            ctx.stroke();
+            if (hasLogo) {
+                const logoH = 44;
+                const logoW = (logoImg.naturalWidth / logoImg.naturalHeight) * logoH;
+                ctx.drawImage(logoImg, 20, img.height + 16, logoW, logoH);
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '600 20px -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.fillText('Insight by TradingSpy', 20, img.height + 82);
+                ctx.fillStyle = '#64748b';
+                ctx.font = '400 16px -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.fillText('github.com/mrhustlex/TradingSpy-TradingAgentService', 20, img.height + 104);
+            } else {
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '600 22px -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.fillText('TradingSpy', 20, img.height + 36);
+                ctx.fillStyle = '#64748b';
+                ctx.font = '400 16px -apple-system, BlinkMacSystemFont, sans-serif';
+                ctx.fillText('github.com/mrhustlex/TradingSpy-TradingAgentService', 20, img.height + 56);
+            }
+            const finalDataUrl = canvas.toDataURL('image/png');
+            setImagePreview({ dataUrl: finalDataUrl, messageId });
+        } catch (error) {
+            notify?.(`Export failed: ${error?.message || 'could not capture message'}`, 'error');
+        }
+    };
+
+    const downloadPreviewImage = () => {
+        if (!imagePreview) return;
+        const link = document.createElement('a');
+        link.download = `tradingspy-${imagePreview.messageId.slice(0, 8)}.png`;
+        link.href = imagePreview.dataUrl;
+        link.click();
+        setImagePreview(null);
+        setCopiedId(`img-${imagePreview.messageId}`);
+        setTimeout(() => setCopiedId(null), 2000);
     };
 
     const openReplyThread = (msgId) => {
@@ -4338,8 +4442,13 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                             <RefreshCw className="animate-spin" size={11} style={{ opacity: 0.5 }} />
                                         )}
                                         {assistantMessage && message.content && message.id !== currentStreamingId && (
-                                            <button className="btn btn-ghost btn-xs" onClick={() => copyToClipboard(message.content, message.id)} style={{ opacity: 0.4, padding: '0.2rem' }}>
+                                            <button className="btn btn-ghost btn-xs" onClick={() => copyToClipboard(message.content, message.id, true)} style={{ opacity: 0.4, padding: '0.2rem' }}>
                                                 {copiedId === message.id ? <Check size={11} /> : <Copy size={11} />}
+                                            </button>
+                                        )}
+                                        {assistantMessage && message.content && message.id !== currentStreamingId && (
+                                            <button className="btn btn-ghost btn-xs" onClick={() => exportMessageAsImage(message.id, message.content)} style={{ opacity: 0.4, padding: '0.2rem' }} title="Export as image">
+                                                {copiedId === `img-${message.id}` ? <Check size={11} /> : <Download size={11} />}
                                             </button>
                                         )}
                                         {assistantMessage && message.id !== currentStreamingId && (
@@ -4356,7 +4465,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                     {liveTraceVisible && renderReactTrace(message)}
 
                                     {/* message bubble — now always at the bottom */}
-                                    <div style={{
+                                    <div id={`msg-bubble-${message.id}`} style={{
                                         background: assistantMessage ? 'rgba(15,23,42,0.72)' : 'rgba(34,197,94,0.13)',
                                         padding: '0.78rem 0.95rem',
                                         borderRadius: assistantMessage ? '8px' : '8px 8px 2px 8px',
@@ -4922,6 +5031,42 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                     </div>
                 </div>
             )}
+
+            <AnimatePresence>
+                {imagePreview && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={() => setImagePreview(null)}
+                        style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.9, opacity: 0 }}
+                            onClick={e => e.stopPropagation()}
+                            style={{ background: '#111827', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.18)', padding: '1.25rem', maxWidth: '520px', width: '100%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', gap: '1rem' }}
+                        >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span style={{ fontWeight: 700, fontSize: '0.9rem', color: '#e2e8f0' }}>Image Preview</span>
+                                <button className="btn btn-ghost btn-xs" onClick={() => setImagePreview(null)} style={{ padding: '0.2rem' }}>
+                                    <X size={14} />
+                                </button>
+                            </div>
+                            <div style={{ overflow: 'auto', borderRadius: '8px', border: '1px solid rgba(148,163,184,0.12)' }}>
+                                <img src={imagePreview.dataUrl} alt="Preview" style={{ width: '100%', display: 'block' }} />
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setImagePreview(null)}>Cancel</button>
+                                <button className="btn btn-primary btn-sm" onClick={downloadPreviewImage}>
+                                    <Download size={14} /> Download
+                                </button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 };
