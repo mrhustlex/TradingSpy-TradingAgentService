@@ -1590,7 +1590,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             const hasLogo = logoImg.complete && logoImg.naturalWidth > 0;
 
             const canvas = document.createElement('canvas');
-            const footerHeight = hasLogo ? 110 : 64;
+            const minFooter = hasLogo ? 160 : 100;
+            const footerHeight = Math.max(minFooter, Math.ceil(img.height * 0.25));
+            const scale = footerHeight / (hasLogo ? 160 : 100);
             canvas.width = img.width;
             canvas.height = img.height + footerHeight;
             const ctx = canvas.getContext('2d');
@@ -1603,22 +1605,22 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             ctx.lineTo(canvas.width - 16, img.height + 1);
             ctx.stroke();
             if (hasLogo) {
-                const logoH = 44;
+                const logoH = Math.round(50 * scale);
                 const logoW = (logoImg.naturalWidth / logoImg.naturalHeight) * logoH;
-                ctx.drawImage(logoImg, 20, img.height + 16, logoW, logoH);
+                ctx.drawImage(logoImg, 20, img.height + Math.round(18 * scale), logoW, logoH);
                 ctx.fillStyle = '#94a3b8';
-                ctx.font = '600 20px -apple-system, BlinkMacSystemFont, sans-serif';
-                ctx.fillText('Insight by TradingSpy', 20, img.height + 82);
+                ctx.font = `600 ${Math.round(22 * scale)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+                ctx.fillText('Insight by TradingSpy', 20, img.height + Math.round(95 * scale));
                 ctx.fillStyle = '#64748b';
-                ctx.font = '400 16px -apple-system, BlinkMacSystemFont, sans-serif';
-                ctx.fillText('github.com/mrhustlex/TradingSpy-TradingAgentService', 20, img.height + 104);
+                ctx.font = `400 ${Math.round(17 * scale)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+                ctx.fillText('github.com/mrhustlex/TradingSpy-TradingAgentService', 20, img.height + Math.round(120 * scale));
             } else {
                 ctx.fillStyle = '#94a3b8';
-                ctx.font = '600 22px -apple-system, BlinkMacSystemFont, sans-serif';
-                ctx.fillText('TradingSpy', 20, img.height + 36);
+                ctx.font = `600 ${Math.round(24 * scale)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+                ctx.fillText('TradingSpy', 20, img.height + Math.round(40 * scale));
                 ctx.fillStyle = '#64748b';
-                ctx.font = '400 16px -apple-system, BlinkMacSystemFont, sans-serif';
-                ctx.fillText('github.com/mrhustlex/TradingSpy-TradingAgentService', 20, img.height + 56);
+                ctx.font = `400 ${Math.round(18 * scale)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+                ctx.fillText('github.com/mrhustlex/TradingSpy-TradingAgentService', 20, img.height + Math.round(68 * scale));
             }
             const finalDataUrl = canvas.toDataURL('image/png');
             setImagePreview({ dataUrl: finalDataUrl, messageId });
