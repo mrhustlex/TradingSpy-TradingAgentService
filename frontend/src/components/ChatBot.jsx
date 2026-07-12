@@ -1766,7 +1766,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         const { confirm_id } = ts.confirmRequest;
         updateThreadStreamState(activeThread.id, { confirmRequest: null, agentProgress: { label: `✅ You chose: ${answer}`, pct: null, detail: 'Agent continuing…' } });
         try {
-            await fetch(`http://${window.location.hostname}:8000/api/ai/confirm/${confirm_id}`, {
+            await fetch(`${API_BASE}/ai/confirm/${confirm_id}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ answer }),

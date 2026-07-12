@@ -1,6 +1,8 @@
 # Build stage
 FROM node:22-slim AS build
 WORKDIR /app
+ARG VITE_API_PORT=8000
+ENV VITE_API_PORT=$VITE_API_PORT
 COPY package*.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
