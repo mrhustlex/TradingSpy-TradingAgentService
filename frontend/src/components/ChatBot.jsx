@@ -597,9 +597,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         };
     });
     
-    // Per-thread streaming state: threadId -> { isStreaming, streamingMessage, currentStreamingId, abortController, agentProgress, confirmRequest, queuedInput, pendingAgentRequest, liveCommentary }
+    // Per-thread streaming state: threadId -> { isStreaming, streamingMessage, currentStreamingId, abortController, agentProgress, confirmRequest, queuedMessages, pendingAgentRequest, liveCommentary }
     const [threadStreamingState, setThreadStreamingState] = useState({});
-    const defaultThreadStreamingState = { isStreaming: false, streamingMessage: '', currentStreamingId: null, abortController: null, agentProgress: null, confirmRequest: null, queuedInput: null, pendingAgentRequest: null, liveCommentary: [] };
+    const defaultThreadStreamingState = { isStreaming: false, streamingMessage: '', currentStreamingId: null, abortController: null, agentProgress: null, confirmRequest: null, queuedMessages: [], pendingAgentRequest: null, liveCommentary: [] };
     const threadStreamingStateRef = useRef(threadStreamingState);
     useEffect(() => {
         threadStreamingStateRef.current = threadStreamingState;
@@ -621,7 +621,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     // Get current thread's streaming state
     const currentThreadStreaming = getThreadState(activeThread.id);
-    const { isStreaming, streamingMessage, agentProgress, confirmRequest, queuedInput, pendingAgentRequest, liveCommentary, currentStreamingId } = currentThreadStreaming;
+    const { isStreaming, streamingMessage, agentProgress, confirmRequest, queuedMessages, pendingAgentRequest, liveCommentary, currentStreamingId } = currentThreadStreaming;
     const isAssistantBusy = isStreaming || !!currentStreamingId || !!pendingAgentRequest;
     const mainInputPlaceholder = 'Ask about markets, generate strategies, run backtests, download data...';
     const chatTokenUsage = useMemo(() => {
@@ -2093,19 +2093,27 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         }
     };
 
-    // fire queued message once the assistant is fully idle for the active thread
+    // fire queued messages once the assistant is fully idle for the active thread
+    const processingQueuedRef = useRef(false);
     useEffect(() => {
-        if (!isAssistantBusy && queuedInput) {
-            const msg = queuedInput;
-            updateThreadStreamState(activeThread.id, { queuedInput: null });
+        if (!isAssistantBusy && queuedMessages.length > 0 && !processingQueuedRef.current) {
+            processingQueuedRef.current = true;
+            const msg = queuedMessages[0];
+            const rest = queuedMessages.slice(1);
+            updateThreadStreamState(activeThread.id, { queuedMessages: rest });
             setInput('');
             // small delay so state settles
             setTimeout(() => {
-                submitUserMessage(msg, { clearInput: true });
+                submitUserMessage(msg, { clearInput: true }).finally(() => {
+                    processingQueuedRef.current = false;
+                });
             }, 50);
         }
+        if (!isAssistantBusy && queuedMessages.length === 0) {
+            processingQueuedRef.current = false;
+        }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isAssistantBusy, queuedInput, activeThread.id]);
+    }, [isAssistantBusy, queuedMessages, activeThread.id]);
 
     // ── stream a generation task and update a message bubble live ─────────────
     const streamGenerationTask = async (tid, msgId, taskId, stratLabel) => {
@@ -2316,7 +2324,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         const targetState = getThreadState(targetThreadId, threadStreamingStateRef.current);
         const targetBusy = targetState.isStreaming || !!targetState.currentStreamingId || !!targetState.pendingAgentRequest;
         if (allowQueue && targetBusy) {
-            updateThreadStreamState(targetThreadId, { queuedInput: userMsg });
+            updateThreadStreamState(targetThreadId, { queuedMessages: [...(targetState.queuedMessages || []), userMsg] });
             if (clearInput) setInput('');
             return;
         }
@@ -2498,7 +2506,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         if (latestBusy) {
             setInputHistoryIndex(null);
             setInputHistoryDraft('');
-            updateThreadStreamState(activeThread.id, { queuedInput: userMsg });
+            updateThreadStreamState(activeThread.id, { queuedMessages: [...(latest.queuedMessages || []), userMsg] });
             setInput('');
             return;
         }
@@ -2506,11 +2514,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     };
 
     const cancelQueuedInput = () => {
-        updateThreadStreamState(activeThread.id, { queuedInput: null });
+        updateThreadStreamState(activeThread.id, { queuedMessages: [] });
     };
 
     const steerQueuedInput = () => {
-        if (!queuedInput) return;
+        if (!queuedMessages.length) return;
         
         // Get current streaming state
         const ts = getThreadState(activeThread.id);
@@ -2521,12 +2529,16 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             ts.abortController.abort();
         }
         
+        // Take the first queued message, keep the rest
+        const steeringMessage = queuedMessages[0];
+        const remaining = queuedMessages.slice(1);
+        
         // Update state to show interruption
         updateThreadStreamState(activeThread.id, { 
             isStreaming: false, 
             streamingMessage: '', 
             abortController: null,
-            queuedInput: null 
+            queuedMessages: remaining 
         });
         
         // Mark the interrupted message
@@ -2535,13 +2547,13 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         }
         
         // Send the steering message immediately with context
-        const steeringMessage = wasGenerating 
-            ? `[Steering] ${queuedInput}` 
-            : queuedInput;
+        const messageToSend = wasGenerating 
+            ? `[Steering] ${steeringMessage}` 
+            : steeringMessage;
         
         // Small delay to let abort complete
         setTimeout(() => {
-            submitUserMessage(steeringMessage, { 
+            submitUserMessage(messageToSend, { 
                 clearInput: true,
                 allowQueue: false 
             });
@@ -2549,9 +2561,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     };
 
     const startQueuedInputInNewThread = () => {
-        if (!queuedInput) return;
-        const queuedMessage = queuedInput;
-        updateThreadStreamState(activeThread.id, { queuedInput: null });
+        if (!queuedMessages.length) return;
+        const queuedMessage = queuedMessages[0];
+        const rest = queuedMessages.slice(1);
+        updateThreadStreamState(activeThread.id, { queuedMessages: rest });
         const newThreadId = createThread(queuedMessage.length > 40 ? `${queuedMessage.slice(0, 40)}…` : queuedMessage);
         setInput('');
         setTimeout(() => {
@@ -4670,11 +4683,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
                 {/* input bar */}
                 <div style={{ padding: '0.85rem 1.5rem', borderTop: '1px solid var(--border-subtle)', flexShrink: 0 }}>
-                    <div style={{ minHeight: '1.75rem', marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)', opacity: queuedInput ? 1 : 0, display: 'flex', alignItems: 'center', gap: '0.45rem', minWidth: 0 }}>
+                    <div style={{ minHeight: '1.75rem', marginBottom: '0.5rem', fontSize: '0.78rem', color: 'var(--text-secondary)', opacity: queuedMessages.length ? 1 : 0, display: 'flex', alignItems: 'center', gap: '0.45rem', minWidth: 0 }}>
                         <div style={{ flex: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
-                            {queuedInput ? `Queued: "${queuedInput.slice(0, 80)}${queuedInput.length > 80 ? '...' : ''}"` : 'No queued message'}
+                            {queuedMessages.length ? `Queued (${queuedMessages.length}): "${queuedMessages[0].slice(0, 60)}${queuedMessages[0].length > 60 ? '...' : ''}"${queuedMessages.length > 1 ? ` +${queuedMessages.length - 1} more` : ''}` : ''}
                         </div>
-                        {queuedInput && (
+                        {queuedMessages.length > 0 && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexShrink: 0 }}>
                                 <button className="btn btn-ghost btn-xs" onClick={startQueuedInputInNewThread} title="Start queued message in another thread" style={{ padding: '0.25rem 0.45rem' }}>
                                     <Plus size={12} /> New thread

@@ -997,14 +997,12 @@ def screen_industry_insider_activity(
         "min_value": min_value,
         "include_grants": include_grants,
         "as_of": datetime.now().isoformat(),
-        "data_sources": ["TradingSpy /api/intelligence/insider-trades", "yfinance insider_transactions and insider_roster_holders"],
         "checked": len(symbols),
         "total_transactions_returned": raw.get("total", len(trades)),
         "matched": len(rows),
         "rows": rows[:20],
         "notable_trades": notable_trades[:25],
         "ticker_meta": raw.get("ticker_meta") or {},
-        "interpretation_note": "Open-market buys/sells are separated from stock awards/grants. Grants are compensation events and should not be treated as insider buy signals.",
     }
 
 
@@ -1577,17 +1575,18 @@ def read_candles(
 
 
 @tool
-def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = True) -> dict:
+def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = True, include_insiders: bool = False) -> dict:
     """Collect a deep stock research packet for a ticker.
 
     Use this for broad stock analysis questions such as "is X a good stock",
     "what is the bull/bear case", "what products are driving growth", or
-    "analyze X using news, insiders, fundamentals, and catalysts".
+    "analyze X using news, fundamentals, and catalysts".
 
     Args:
         ticker: Stock symbol e.g. NVDA, CRWD, AAPL
         focus: Optional focus such as full, growth, product, valuation, insiders, catalyst, risk
         include_web: Whether to include web search results for product/growth/catalyst context
+        include_insiders: Whether to include insider trading data (default: False — only fetch when user explicitly asks)
     """
     symbol = str(ticker or "").strip().upper().replace("$", "")
     if not symbol:
@@ -1597,7 +1596,7 @@ def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = Tr
     technicals = _get_technicals_cached(symbol)
     info = _get_ticker_info_cached(symbol)
     fundamentals = _get_fundamentals_cached(symbol)
-    insiders = get_insider_trades.invoke({"tickers": [symbol], "limit": 20, "days_back": 365})
+    insiders = get_insider_trades.invoke({"tickers": [symbol], "limit": 20, "days_back": 365}) if include_insiders else None
 
     news = {}
     try:
@@ -1651,7 +1650,7 @@ def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = Tr
         "technicals": technicals,
         "company": info,
         "fundamentals": fundamentals,
-        "insider_trades": insiders,
+        **({"insider_trades": insiders} if insiders is not None else {}),
         "news": news,
         "web_research": web,
         "sector_context": sector_context,
@@ -1668,7 +1667,7 @@ def screen_undervalued_stocks(
     requirements: str = "undervalued fundamentals with positive growth and profitability",
     max_results: int = 5,
     max_checked: int = 30,
-    include_insiders: bool = True,
+    include_insiders: bool = False,
     include_news: bool = True,
     include_options: bool = True,
     include_market_context: bool = True,
@@ -1974,7 +1973,8 @@ Keep responses concise and natural.
 **SINGLE TICKER ANALYSIS = USE get_stock_deep_dive ONLY**
 - If user asks to analyze ONE ticker (e.g., "Deep dive CRWD", "Analyze TSLA", "Bull/bear case for NVDA")
 - **DO NOT CALL screen_industry_insider_activity** 
-- **CALL get_stock_deep_dive** - it already includes insider data for that ticker
+- **CALL get_stock_deep_dive** - it includes quote, technicals, fundamentals, news, and web research
+- **DO NOT pass include_insiders=True unless the user explicitly asks about insider activity**
 - screen_industry_insider_activity is ONLY for scanning MULTIPLE tickers/sectors/industries
 - Violating this wastes API calls and shows wrong data
 
@@ -2009,7 +2009,7 @@ Your training data has a cutoff date. You CANNOT rely on it for:
 🚨 CRITICAL TOOL USAGE RULES 🚨
 - **CALL EACH TOOL ONLY ONCE PER REQUEST** - Do not retry the same tool multiple times
 - **After calling a tool, analyze the result and provide your response** - Do not call the same tool again
-- **SYNTHESIZE tool results into analysis** - Never just dump raw tool output. Explain what the data means.
+- **SYNTHESIZE tool results into natural analysis** - Talk about the data like a knowledgeable friend, not a report template. Weave numbers into your narrative.
 - **Structure your responses clearly** - Use sections, bullet points, and narrative flow
 - **If a tool returns an error, acknowledge it and provide alternative analysis** - Do not retry
 - **Exception: Only retry if explicitly instructed by the system or if the error is a temporary network issue**
@@ -2070,10 +2070,10 @@ Your training data has a cutoff date. You CANNOT rely on it for:
 
 🧠 REACT REASONING STYLE:
 When analyzing requests, think through your approach explicitly:
-- **Thought**: What do I need to do? **FIRST: Is this ONE ticker or MULTIPLE tickers?** If ONE ticker deep dive → use get_stock_deep_dive. If MULTIPLE tickers/sector scan → can use screen tools. What other tools do I need? Why?
-- **Action**: Call the specific tools needed **FOR THIS SPECIFIC REQUEST** (NEVER call screen_industry_insider_activity for single-stock analysis)
+- **Thought**: What do I need to do? What tools do I need? Why?
+- **Action**: Call the specific tools needed **FOR THIS SPECIFIC REQUEST**
 - **Observation**: Analyze the results and what they tell us
-- **Final Answer**: Provide your conclusion based on observations **in structured narrative form, not raw data dumps**
+- **Final Answer**: Provide your conclusion based on observations **in natural, conversational form**
 
 Be explicit about your reasoning - show your thought process to the user.
 
@@ -2097,10 +2097,16 @@ EXAMPLE OF CORRECT BEHAVIOR:
 ✅ RIGHT: Read tool response → {"roi": 133.45} → "The backtest shows 133.45% ROI"
 
 ❌ WRONG: "I analyzed the data and GOOG looks bullish"
-✅ RIGHT: Call get_technicals(GOOG) → Read actual RSI/trend → Report exact values
+✅ RIGHT: Call get_technicals(GOOG) → Read actual RSI/trend → Report exact values naturally
 
 ❌ WRONG: "For 2024 data, I'll use the 1y dataset"
 ✅ RIGHT: Download 2y data → Use start_date="2024-01-01", end_date="2024-12-31" for exact period
+
+RESPONSE STYLE:
+- Talk like a knowledgeable friend who trades — direct, casual, a bit opinionated
+- Weave data into your narrative naturally instead of dumping it in tables
+- Highlight what matters most instead of listing every field
+- Use exact numbers from tools but present them conversationally
 
 📊 MARKET DATA ANALYSIS WORKFLOW:
 When user asks for technical analysis or candlestick patterns:
@@ -2121,10 +2127,10 @@ Tool Priority Guide:
 - Basic price question → Use ONLY get_quote
 - "Tell me about X" → Use get_quote + get_ticker_info (2 tools)
 - Valuation/fundamentals/forward PE question → Use get_fundamentals
-- Single-ticker insider buying/selling/trading question → **DO NOT USE screen_industry_insider_activity** → Use get_insider_trades OR get insider data from get_stock_deep_dive
-- Industry/sector/watchlist insider buying/selling scan → Use screen_industry_insider_activity
-- Deep stock analysis / bull-bear case / product growth / catalysts → **Use ONLY get_stock_deep_dive** (includes insider data - don't call separate insider tools)
-- Find undervalued stocks / fundamental screen / keep searching for value candidates → Use screen_undervalued_stocks
+- Single-ticker insider question → Use get_stock_deep_dive with include_insiders=True
+- Industry/sector/watchlist insider scan → Use screen_industry_insider_activity
+- Deep stock analysis / bull-bear case / product growth / catalysts → Use get_stock_deep_dive (insiders off by default)
+- Find undervalued stocks / fundamental screen → Use screen_undervalued_stocks
 - Technical analysis → Use get_technicals (1 tool, includes price)
 - Earnings question → Use get_earnings_dates (1 tool)
 - Dividend question → Use get_dividends (1 tool)
@@ -2137,7 +2143,7 @@ Available tools:
 - get_fundamentals: Get valuation metrics including trailing PE, forward PE, PEG, margins, growth, analyst target, recommendation
 - get_insider_trades: Get recent insider buying/selling records, transaction prices, transaction values, shares, roles, and insider ownership context
 - screen_industry_insider_activity: Scan a sector/industry preset or ticker list for recent notable insider buys/sells, grouped by symbol and separated from grants/awards
-- get_stock_deep_dive: Comprehensive evidence packet for a stock: quote, technicals, fundamentals, company info, insider trades, news, web research on product/growth/catalysts/risks, and sector context
+- get_stock_deep_dive: Comprehensive evidence packet for a stock: quote, technicals, fundamentals, company info, news, web research on product/growth/catalysts/risks, and sector context. Pass include_insiders=True only when user explicitly asks about insider activity.
 - screen_undervalued_stocks: Iterative fundamental value screener over presets or custom tickers; returns passing candidates, scores, reasons, cautions, rejected sample, and continuation hint
 - get_market_overview: Get global market overview - US, European, Asian indices, commodities, crypto
 - get_earnings_dates: Get upcoming earnings dates and historical earnings
@@ -2201,19 +2207,10 @@ When user asks about news or current events:
 3. Provide context and analysis, not just raw data
 
 When user asks for deep stock analysis, investment thesis, bull/bear case, product growth, "killer product", moat, catalysts, or whether a stock is attractive:
-1. Use get_stock_deep_dive first - this tool includes insider data for the specific ticker.
-2. **DO NOT call screen_industry_insider_activity** for single-stock deep dives - the insider data is already in get_stock_deep_dive.
-3. **CRITICAL: Synthesize the evidence into a structured narrative analysis** - do NOT just dump raw tool output.
-4. Structure your response with clear sections:
-   - **Business Overview**: What the company does, key products/services
-   - **Fundamentals**: Revenue, margins, growth rates, profitability
-   - **Valuation**: P/E, P/S, PEG vs industry, forward metrics
-   - **Technical Setup**: Trend, RSI, support/resistance, momentum
-   - **Recent Catalysts**: Latest news, earnings, product launches, partnerships
-   - **Insider Activity**: Recent buys/sells for THIS ticker only (from get_stock_deep_dive)
-   - **Bull Case**: 3-4 strong reasons to be bullish
-   - **Bear Case**: 3-4 key risks or reasons for caution
-   - **Verdict**: Balanced conclusion with what would change the view
+1. Use get_stock_deep_dive first. **DO NOT pass include_insiders=True unless user explicitly asks about insider activity.**
+2. **DO NOT call screen_industry_insider_activity** for single-stock deep dives.
+3. **CRITICAL: Synthesize the evidence into a natural, conversational analysis** - talk about the stock like a knowledgeable friend, not a report template. Use exact numbers from tool results but weave them into your narrative naturally.
+4. Cover what matters: business overview, fundamentals, valuation, technicals, catalysts, bull/bear case, and your take.
 5. Use exact numbers from tool results - don't make up data.
 6. Mention unavailable/stale data explicitly instead of pretending it is complete.
 7. Do not make a buy/sell guarantee; frame it as research and scenario analysis.
@@ -2222,25 +2219,25 @@ When user asks to find undervalued stocks by fundamentals, keep searching until 
 1. Use screen_undervalued_stocks with the user's stated requirements.
 2. Start with the user's requested universe if given; otherwise use "default" or a sector preset inferred from the request.
 3. If matched is 0 and the user asked to keep searching, call screen_undervalued_stocks again with a wider universe or relaxed-but-disclosed thresholds. Stop after 2-3 screening passes and explain what was checked.
-4. Report candidates with exact metrics from the tool, why they passed, market/sector backdrop, quote latest_bar date, relative volume, recent returns, news/insider/options context when present, and what could be wrong with the screen.
+4. Talk about candidates naturally — highlight why they passed, what the metrics mean, and what could be wrong with the screen.
 5. Do not call anything "undervalued" as a fact. Say "screened as potentially undervalued" and explain the assumptions.
 6. Do not invent insider names, product catalysts, option statistics, or market-volume claims. If the screener field is missing or empty, say that field was unavailable.
-7. For insider buying/selling/trading answers, include transaction date, insider, buy/sell/grant classification, shares, transaction price, approximate transaction value, and ownership/percentage context when present. If price or percentage context is not present in the tool result, say it is unavailable from the feed instead of omitting it.
+7. For insider context when present, mention notable buys/sells naturally — don't dump every transaction.
 8. Treat insider stock awards/grants separately from open-market buys. Never call a zero-price stock award an insider buy signal.
 
-When user asks a follow-up after an insider answer such as "what price?", "what percentage?", "how much?", or "show the buying/selling price", answer from the most recent insider-trade context. Do not reinterpret the follow-up as a new unrelated market-analysis question.
+When user asks a follow-up after an insider answer such as "what price?", "what percentage?", "how much?", or "show the buying/selling price", answer from the most recent insider-trade context naturally. Do not reinterpret the follow-up as a new unrelated market-analysis question.
 
 When user asks to scan "all", "everything", "the whole market", or all stocks for insider buying/selling without giving tickers, a sector, an industry, a watchlist, or an exchange/universe, ask a brief clarifying question before using insider tools. Offer concrete scopes such as: my watchlist, Magnificent 7, S&P 500 large caps, Nasdaq 100, banks, software, semiconductors, energy, healthcare, or a custom ticker list. Do not silently choose a broad universe.
 
 When user asks for companies or stocks related to a theme, product, niche, supply chain, or business activity, such as "lab diamond related stocks", "any company does that?", "stocks exposed to X", or "who makes X", prioritize yfinance/ticker tools for quotes, fundamentals, and validation, but do not rely only on yfinance discovery. Use SearXNG/web search or news/search context to broaden the candidate set, then map public candidates back to tickers and validate them with yfinance when possible. Include public pure-plays, indirect public exposure, private companies, and delisted/distressed names in separate groups when relevant. If there are no clean public pure-plays, say that clearly and list indirect or private candidates separately instead of answering "none found."
 
 When user asks for recent insider buying/selling across an industry, sector, watchlist, or group:
-1. **CRITICAL: If analyzing a SINGLE TICKER (e.g., "deep dive AAPL", "analyze TSLA"), DO NOT call screen_industry_insider_activity. The insider data is in get_stock_deep_dive.**
+1. **CRITICAL: If analyzing a SINGLE TICKER (e.g., "deep dive AAPL", "analyze TSLA"), DO NOT call screen_industry_insider_activity. Use get_stock_deep_dive with include_insiders=True instead.**
 2. Use screen_industry_insider_activity ONLY when explicitly asked to scan MULTIPLE stocks, an industry, sector, or watchlist.
 3. Infer a universe preset when possible: software/AI/cloud/cyber -> software-ai; semiconductors/chips -> semis; banks/financials -> financials; healthcare/biotech/medical -> healthcare; oil/energy -> energy; retail/consumer -> consumer; industrials -> industrials.
 4. Use the user's lookback if given; otherwise use days_back=90 for "recent".
-5. Report only exact transactions returned by the tool. Separate open-market buys, open-market sells, and grants/awards.
-6. If no open-market transactions are found, say that plainly and mention whether only grants/awards were found.
+5. Talk about the insider activity naturally — highlight what matters (big buys, notable sells, patterns) instead of dumping every transaction in a table.
+6. Separate open-market buys from sells from grants/awards. Never call a zero-price stock award an insider buy signal.
 
 When user asks broad market questions like "why is the market down today" or "why did stocks drop":
 1. Use get_market_overview first to identify which indices/assets are moving

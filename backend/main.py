@@ -10353,39 +10353,7 @@ UNIFIED ASSISTANT CONFIG:
                 yield f"data: {json.dumps({'type': 'error', 'content': f'Provider setup failed for {provider}: {provider_error}'})}\n\n"
                 return
 
-            simple_message = (request.message or "").strip().lower()
-            recent_history_text = "\n".join(
-                str(item.get("content") or "").lower()
-                for item in (request.history or [])[-8:]
-                if isinstance(item, dict)
             )
-            insider_terms = (
-                "insider buy", "insider buys", "insider buying",
-                "insider sell", "insider sells", "insider selling",
-                "insider trade", "insider trades", "insider trading",
-                "insider activity", "insider transactions",
-            )
-            insider_followup_terms = (
-                "key buy", "key buys", "any buy", "any buys", "buy?", "buys?",
-                "selling?", "sell?", "sold?", "purchase?", "purchases?",
-                "what price", "how much", "what percentage",
-            )
-            is_insider_activity_request = (
-                any(term in simple_message for term in insider_terms)
-                or ("insider" in recent_history_text and any(term in simple_message for term in insider_followup_terms))
-            )
-            if simple_message in {"hi", "hello", "hey", "yo", "hiya"}:
-                response_text = "Hi. I can help with market analysis, news, strategy generation, data downloads, backtests, and optimization. What do you want to look at?"
-                quick_step = {
-                    "label": "Greeting",
-                    "status": "success",
-                    "comment": "Answered directly",
-                    "note": "No tools needed"
-                }
-                yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
-                yield f"data: {json.dumps({'type': 'step', 'step': quick_step})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'thinking': 'Simple greeting answered directly.', 'steps': [quick_step], 'tools_used': [], 'data': {}, 'triggered_tasks': []})}\n\n"
-                return
             
             # PHASE 1: THOUGHT - Visible process summary, scaled by user preference.
             if thinking_detail != "brief":
@@ -10419,21 +10387,6 @@ UNIFIED ASSISTANT CONFIG:
             except Exception as tool_select_error:
                 logger.warning(f"Tool selection failed or timed out; falling back to direct response: {tool_select_error}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'thinking', 'content': 'Tool selection did not return in time; answering directly...'})}\n\n"
-                if is_insider_activity_request:
-                    response_text = (
-                        "I could not verify insider transactions because the data-tool selection timed out. "
-                        "I will not guess insider names, dates, prices, or amounts. Please retry the insider scan."
-                    )
-                    direct_step = {
-                        "label": "Insider data unavailable",
-                        "status": "error",
-                        "comment": "Tool selection timed out",
-                        "note": "No insider trades reported without data",
-                    }
-                    yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
-                    yield f"data: {json.dumps({'type': 'step', 'step': direct_step})}\n\n"
-                    yield f"data: {json.dumps({'type': 'done', 'thinking': 'Insider answer blocked because no verified data source completed.', 'steps': [direct_step], 'tools_used': [], 'data': {}, 'triggered_tasks': []})}\n\n"
-                    return
                 response_text = await call_llm(
                     provider=provider,
                     model=model,
@@ -10464,78 +10417,6 @@ UNIFIED ASSISTANT CONFIG:
             triggered_tasks = []
 
             tool_calls = list(getattr(response, "tool_calls", []) or [])
-            forecast_terms = (
-                "expected pattern", "projected trend", "forecast path", "forecast chart",
-                "price forecast", "future trend", "upcoming trend", "expected trend", "likely pattern",
-                "price prediction", "predict the price",
-            )
-            is_expected_pattern_request = any(term in simple_message for term in forecast_terms)
-            if is_expected_pattern_request:
-                existing_tool_names = {_normalize_agent_tool_name(tc.get("name")) for tc in tool_calls if isinstance(tc, dict)}
-                if "generate_expected_pattern" not in existing_tool_names:
-                    raw_message = str(request.message or "")
-                    symbol_match = re.search(r"\$([A-Za-z][A-Za-z0-9.-]{0,9})\b", raw_message)
-                    if not symbol_match:
-                        symbol_match = re.search(r"\b([A-Z]{2,6}(?:-USD|=X)?)\b", raw_message)
-                    known_symbols = ("spy", "qqq", "iwm", "dia", "nvda", "tsla", "aapl", "msft", "amzn", "meta", "googl", "amd", "btc-usd")
-                    symbol = symbol_match.group(1).upper() if symbol_match else next((value.upper() for value in known_symbols if re.search(rf"\b{re.escape(value)}\b", simple_message)), None)
-                    if symbol:
-                        interval_match = re.search(r"\b(1m|2m|5m|15m|30m|60m|90m|1h|1d|1wk|1mo)\b", simple_message)
-                        horizon_match = re.search(r"\b(?:next|forecast|project)\s+(\d{1,2})\s+(?:bars?|candles?|days?|hours?)\b", simple_message)
-                        tool_calls.append({
-                            "name": "generate_expected_pattern",
-                            "args": {
-                                "ticker": symbol,
-                                "interval": interval_match.group(1) if interval_match else "1d",
-                                "horizon": min(250, max(2, int(horizon_match.group(1)))) if horizon_match else 20,
-                            },
-                        })
-                        if thinking_detail != "brief":
-                            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Added a recent-bar expected-pattern calculation with an uncertainty range and CSV-ready output...'})}\n\n"
-            market_driver_terms = ["why", "explain", "catalyst", "driver", "up", "down", "going up", "going down", "rally", "selloff", "drop", "today"]
-            market_scope_terms = ["market", "stocks", "s&p", "sp500", "nasdaq", "dow", "heatmap", "mover", "movers", "movement", "sector", "industry"]
-            is_market_driver_question = (
-                any(term in simple_message for term in market_scope_terms)
-                and any(term in simple_message for term in market_driver_terms)
-            )
-            is_market_news_question = (
-                "news" in simple_message
-                and any(term in simple_message for term in market_scope_terms)
-            )
-            if is_market_driver_question or is_market_news_question:
-                existing_tool_names = {tc.get("name") for tc in tool_calls if isinstance(tc, dict)}
-                period = "1d" if "today" in simple_message else "5d"
-                search_query = "latest stock market sector movers news today Reuters CNBC Federal Reserve earnings"
-                if "heatmap" in simple_message or "sector" in simple_message or "industry" in simple_message:
-                    search_query = "latest stock market sector performance today technology energy financials healthcare Reuters CNBC"
-                elif "mover" in simple_message or "movement" in simple_message:
-                    search_query = "latest stock market biggest movers today company news earnings analyst Reuters CNBC"
-                required_calls = [
-                    {"name": "get_market_overview", "args": {}},
-                    {"name": "get_industry_heatmap", "args": {"period": period}},
-                    {"name": "web_search", "args": {"query": search_query}},
-                ]
-                for required_call in required_calls:
-                    if required_call["name"] not in existing_tool_names:
-                        tool_calls.append(required_call)
-                if len(tool_calls) != len(getattr(response, "tool_calls", []) or []):
-                    if thinking_detail != "brief":
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': 'Added required market breadth and news checks for a market-driver question...'})}\n\n"
-
-            if is_insider_activity_request:
-                existing_tool_names = {_normalize_agent_tool_name(tc.get("name")) for tc in tool_calls if isinstance(tc, dict)}
-                if not {"get_insider_trades", "screen_industry_insider_activity"}.intersection(existing_tool_names):
-                    focus = "all"
-                    if any(term in simple_message for term in ("buy", "buys", "buying", "purchase", "purchases")):
-                        focus = "buys"
-                    elif any(term in simple_message for term in ("sell", "sells", "selling", "sold")):
-                        focus = "sells"
-                    tool_calls.append({
-                        "name": "screen_industry_insider_activity",
-                        "args": {"universe": "default", "days_back": 30, "max_checked": 30, "focus": focus},
-                    })
-                    if thinking_detail != "brief":
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': 'Added an insider-activity data check so the answer stays grounded in returned transactions...'})}\n\n"
             
             # Check if LLM wants to call tools
             if tool_calls:
@@ -10769,20 +10650,11 @@ UNIFIED ASSISTANT CONFIG:
                         "If search results show similarly spelled symbols, present them only as possible corrections, not as the same security.\n"
                     )
 
-                deterministic_tool_answer = ""
-                if "screen_undervalued_stocks" in tool_data:
-                    deterministic_tool_answer = _render_screen_undervalued_answer(tool_data["screen_undervalued_stocks"])
-                elif "screen_industry_insider_activity" in tool_data:
-                    deterministic_tool_answer = _render_insider_activity_answer(tool_data["screen_industry_insider_activity"])
-                elif is_insider_activity_request and "get_insider_trades" in tool_data:
-                    deterministic_tool_answer = _render_insider_trades_answer(tool_data["get_insider_trades"])
-                
                 # Only add AIMessage if response has content
                 if hasattr(response, 'content') and response.content:
                     lc_messages.append(AIMessage(content=response.content))
                 
-                if not deterministic_tool_answer:
-                    lc_messages.append(HumanMessage(content=tool_summary + evidence_guard + f"\nBased on these completed observations, answer the original question.\n{answer_depth_instruction}\nDo not mention internal tool or function names. If a value is NaN/null/missing, describe it as unavailable.\nDo not say you will check another source or perform another step; either use the tool results already available or state clearly what remains unavailable.\nPercentage fields ending in `_pct` are already percentages. Ratio fields such as revenue_growth are decimals: 1.96 means 196%, not 1.96%. Never infer RSI, price targets, entry levels, stop losses, or likely percentage declines when those exact values were not returned.\nFor insider buying/selling/trading answers, include transaction date, insider, buy/sell/grant classification, shares, transaction price, approximate value, and ownership/percentage context when those fields are present. If price or percentage context is absent, say it is unavailable from the feed.\nCRITICAL: Use ONLY the tool result numbers/names. Do not add examples, prices, insider names, catalysts, support/resistance, or market stats that are not present in the tool JSON."))
+                lc_messages.append(HumanMessage(content=tool_summary + evidence_guard + f"\nBased on these completed observations, answer the original question.\n{answer_depth_instruction}\nDo not mention internal tool or function names. If a value is NaN/null/missing, describe it as unavailable.\nDo not say you will check another source or perform another step; either use the tool results already available or state clearly what remains unavailable.\nPercentage fields ending in `_pct` are already percentages. Ratio fields such as revenue_growth are decimals: 1.96 means 196%, not 1.96%. Never infer RSI, price targets, entry levels, stop losses, or likely percentage declines when those exact values were not returned.\nTalk naturally about the data — weave numbers into your narrative instead of dumping raw output in tables.\nCRITICAL: Use ONLY the tool result numbers/names. Do not add examples, prices, insider names, catalysts, support/resistance, or market stats that are not present in the tool JSON."))
                 
                 # PHASE 4: FINAL ANSWER - Generate response
                 yield f"data: {json.dumps({'type': 'thinking', 'content': f'💬 FINAL ANSWER: Generating response with {len(tools_used)} tool results...'})}\n\n"
@@ -10790,31 +10662,27 @@ UNIFIED ASSISTANT CONFIG:
                 # Stream the LLM response token-by-token. Some providers occasionally
                 # drop SSE/TLS streams, so retry once with a normal non-stream call.
                 response_text = ""
-                if deterministic_tool_answer:
-                    response_text = deterministic_tool_answer
-                    yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
-                else:
+                try:
+                    final_llm = llm.bind(max_tokens=response_budget)
+                    for chunk in final_llm.stream(lc_messages):
+                        if hasattr(chunk, 'content') and chunk.content:
+                            response_text += chunk.content
+                            yield f"data: {json.dumps({'type': 'response', 'content': _sanitize_assistant_response(response_text)})}\n\n"
+                except Exception as stream_error:
+                    logger.warning(f"LLM stream failed; retrying non-stream response: {stream_error}")
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': 'Provider stream dropped; retrying final answer without streaming...'})}\n\n"
                     try:
-                        final_llm = llm.bind(max_tokens=response_budget)
-                        for chunk in final_llm.stream(lc_messages):
-                            if hasattr(chunk, 'content') and chunk.content:
-                                response_text += chunk.content
-                                yield f"data: {json.dumps({'type': 'response', 'content': _sanitize_assistant_response(response_text)})}\n\n"
-                    except Exception as stream_error:
-                        logger.warning(f"LLM stream failed; retrying non-stream response: {stream_error}")
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': 'Provider stream dropped; retrying final answer without streaming...'})}\n\n"
-                        try:
-                            fallback_response = final_llm.invoke(lc_messages)
-                            response_text = _sanitize_assistant_response(getattr(fallback_response, "content", str(fallback_response)) or "")
-                        except Exception as fallback_error:
-                            logger.error(f"LLM fallback response failed: {fallback_error}", exc_info=True)
-                            response_text = (
-                                "The data checks finished, but the model provider connection dropped while writing the final answer. "
-                                f"I used {len(tools_used)} internal data source(s). "
-                                "Please retry the same question, or switch provider/model if this keeps happening."
-                            )
-                        response_text = _sanitize_assistant_response(response_text)
-                        yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
+                        fallback_response = final_llm.invoke(lc_messages)
+                        response_text = _sanitize_assistant_response(getattr(fallback_response, "content", str(fallback_response)) or "")
+                    except Exception as fallback_error:
+                        logger.error(f"LLM fallback response failed: {fallback_error}", exc_info=True)
+                        response_text = (
+                            "The data checks finished, but the model provider connection dropped while writing the final answer. "
+                            f"I used {len(tools_used)} internal data source(s). "
+                            "Please retry the same question, or switch provider/model if this keeps happening."
+                        )
+                    response_text = _sanitize_assistant_response(response_text)
+                    yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
             else:
                 # No tools needed - direct response
                 yield f"data: {json.dumps({'type': 'thinking', 'content': '💬 FINAL ANSWER: No tools needed, generating direct response...'})}\n\n"
