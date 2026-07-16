@@ -8,38 +8,65 @@ import { INTELLIGENCE_SERVICE, DATA_SERVICE } from '../config';
 const ChartViewer = lazy(() => import('./ChartViewer'));
 
 const DEFAULT_TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA', 'JPM', 'V', 'WMT', 'JNJ', 'PG', 'XOM', 'BAC', 'DIS', 'NFLX', 'ADBE', 'CRM', 'INTC', 'AMD', 'PYPL', 'COST', 'UBER', 'SQ', 'ABNB'];
-const PAGE_SIZE = 30;
+
 const STOCK_BATCH_SIZE = 20;
 const STOCK_BATCH_CONCURRENCY = 4;
 const ETF_QUOTE_BATCH_SIZE = 8;
 const ETF_QUOTE_BATCH_CONCURRENCY = 3;
-const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'XLK', 'SMH', 'IGV', 'FDN', 'XLF', 'KBE', 'KRE', 'XLV', 'XBI', 'IHI', 'XLE', 'OIH', 'XOP', 'XLY', 'XLP', 'XRT', 'XLI', 'XLB', 'XLRE', 'RWR', 'XLU', 'XLC'];
+const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'SMH', 'IGV', 'FDN', 'CIBR', 'SKYY', 'ROBO', 'DRAM', 'XLF', 'KBE', 'KRE', 'KIE', 'XLV', 'XBI', 'IHI', 'IBB', 'PJP', 'XHS', 'XLE', 'OIH', 'XOP', 'URNM', 'UCO', 'ICLN', 'TAN', 'LIT', 'DRIV', 'XLY', 'XLP', 'XRT', 'PEJ', 'IBUY', 'FTCA', 'XLI', 'ITA', 'IYT', 'XHB', 'XLB', 'COPX', 'XLRE', 'RWR', 'VNQ', 'XLU', 'IDU', 'XLC', 'MJ', 'PHO', 'DBA'];
 const INDUSTRY_PROXY_META = {
     SPY: { name: 'S&P 500', sector: 'Broad Market', industry: 'Large Cap' },
     QQQ: { name: 'NASDAQ 100', sector: 'Broad Market', industry: 'Tech/Growth' },
     IWM: { name: 'Russell 2000', sector: 'Broad Market', industry: 'Small Cap' },
+    DIA: { name: 'Dow Jones', sector: 'Broad Market', industry: 'Blue Chip' },
     XLK: { name: 'Technology Select', sector: 'Technology', industry: 'Broad Technology' },
     SMH: { name: 'Semiconductors', sector: 'Technology', industry: 'Semiconductors' },
     IGV: { name: 'Software', sector: 'Technology', industry: 'Software' },
     FDN: { name: 'Internet', sector: 'Technology', industry: 'Internet' },
+    CIBR: { name: 'Cybersecurity', sector: 'Technology', industry: 'Cybersecurity' },
+    SKYY: { name: 'Cloud Computing', sector: 'Technology', industry: 'Cloud' },
+    ROBO: { name: 'Robotics & AI', sector: 'Technology', industry: 'Robotics/AI' },
+    DRAM: { name: 'Memory', sector: 'Technology', industry: 'Memory Chips' },
     XLF: { name: 'Financial Select', sector: 'Financial Services', industry: 'Broad Financials' },
     KBE: { name: 'Bank ETF', sector: 'Financial Services', industry: 'Banks' },
     KRE: { name: 'Regional Banks', sector: 'Financial Services', industry: 'Regional Banks' },
+    KIE: { name: 'Insurance', sector: 'Financial Services', industry: 'Insurance' },
     XLV: { name: 'Healthcare Select', sector: 'Healthcare', industry: 'Broad Healthcare' },
     XBI: { name: 'Biotech', sector: 'Healthcare', industry: 'Biotechnology' },
     IHI: { name: 'Medical Devices', sector: 'Healthcare', industry: 'Medical Devices' },
+    IBB: { name: 'Biotech NASDAQ', sector: 'Healthcare', industry: 'Biotech NASDAQ' },
+    PJP: { name: 'Pharmaceuticals', sector: 'Healthcare', industry: 'Pharmaceuticals' },
+    XHS: { name: 'Healthcare Services', sector: 'Healthcare', industry: 'Healthcare Services' },
     XLE: { name: 'Energy Select', sector: 'Energy', industry: 'Broad Energy' },
     OIH: { name: 'Oil Services', sector: 'Energy', industry: 'Oil Services' },
     XOP: { name: 'Oil & Gas E&P', sector: 'Energy', industry: 'Oil Exploration' },
+    URNM: { name: 'Uranium/Nuclear', sector: 'Energy', industry: 'Uranium' },
+    UCO: { name: 'Crude Oil 2x', sector: 'Energy', industry: 'Crude Oil' },
+    ICLN: { name: 'Clean Energy', sector: 'Clean Energy', industry: 'Renewables' },
+    TAN: { name: 'Solar Energy', sector: 'Clean Energy', industry: 'Solar' },
+    LIT: { name: 'Lithium/Battery', sector: 'Clean Energy', industry: 'Lithium/Battery' },
+    DRIV: { name: 'Electric Vehicles', sector: 'Clean Energy', industry: 'EVs' },
     XLY: { name: 'Consumer Disc.', sector: 'Consumer Cyclical', industry: 'Broad Discretionary' },
     XLP: { name: 'Consumer Staples', sector: 'Consumer Defensive', industry: 'Broad Staples' },
     XRT: { name: 'Retail', sector: 'Consumer Cyclical', industry: 'Retail' },
+    PEJ: { name: 'Leisure & Travel', sector: 'Consumer Cyclical', industry: 'Leisure' },
+    IBUY: { name: 'E-Commerce', sector: 'Consumer Cyclical', industry: 'E-Commerce' },
+    FTCA: { name: 'Food & Beverage', sector: 'Consumer Defensive', industry: 'Food & Bev' },
     XLI: { name: 'Industrial Select', sector: 'Industrials', industry: 'Broad Industrials' },
+    ITA: { name: 'Aerospace & Defense', sector: 'Industrials', industry: 'Aerospace/Defense' },
+    IYT: { name: 'Transportation', sector: 'Industrials', industry: 'Transportation' },
+    XHB: { name: 'Homebuilders', sector: 'Industrials', industry: 'Home Construction' },
     XLB: { name: 'Materials Select', sector: 'Basic Materials', industry: 'Broad Materials' },
+    COPX: { name: 'Copper Miners', sector: 'Basic Materials', industry: 'Copper' },
     XLRE: { name: 'Real Estate Select', sector: 'Real Estate', industry: 'Broad Real Estate' },
     RWR: { name: 'REIT ETF', sector: 'Real Estate', industry: 'REITs' },
+    VNQ: { name: 'Vanguard REIT', sector: 'Real Estate', industry: 'REITs Broad' },
     XLU: { name: 'Utilities Select', sector: 'Utilities', industry: 'Broad Utilities' },
+    IDU: { name: 'Utilities iShares', sector: 'Utilities', industry: 'Utilities Broad' },
     XLC: { name: 'Comm. Services', sector: 'Communication Services', industry: 'Broad Communication' },
+    MJ: { name: 'Cannabis', sector: 'Cannabis', industry: 'Cannabis' },
+    PHO: { name: 'Water Resources', sector: 'Utilities', industry: 'Water' },
+    DBA: { name: 'Agriculture', sector: 'Basic Materials', industry: 'Agriculture' },
 };
 
 const PERIOD_OPTIONS = ['1min','5min','15min','30min','1h', '1d','5d','1mo','3mo','6mo','1y','2y','5y','10y','ytd','max'];
@@ -212,7 +239,6 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
     const [editingGroup, setEditingGroup] = useState(null);
     const [customSectors, setCustomSectors] = useState(null);
     const [searchQuery, setSearchQuery] = useState('');
-    const [page, setPage] = useState(1);
     const [period, setPeriod] = useState('1d');
     const [selectedDetail, setSelectedDetail] = useState(null);
     const [intelTicker, setIntelTicker] = useState(null);
@@ -229,6 +255,7 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
     });
     const [extended, setExtended] = useState(false);
     const [showUnavailableEtfs, setShowUnavailableEtfs] = useState(false);
+    const [sectorFilter, setSectorFilter] = useState(null);
     const heatmapRequestRef = useRef(0);
 
     useEffect(() => {
@@ -600,9 +627,12 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
     }, [flatItems, mode]);
 
     const sortedItems = useMemo(() => {
-        const visible = mode === 'etfs' && !showUnavailableEtfs
+        let visible = mode === 'etfs' && !showUnavailableEtfs
             ? flatItems.filter(item => hasChangeValue(item))
             : flatItems;
+        if (sectorFilter && sectorFilter.length > 0) {
+            visible = visible.filter(item => sectorFilter.includes(item.sector));
+        }
         return [...visible].sort((a, b) => {
             const aHas = hasChangeValue(a);
             const bHas = hasChangeValue(b);
@@ -611,7 +641,7 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
             const bVal = bHas ? Number(b.change_percent) : 0;
             return sortAsc ? aVal - bVal : bVal - aVal;
         });
-    }, [flatItems, sortAsc, mode, showUnavailableEtfs]);
+    }, [flatItems, sortAsc, mode, showUnavailableEtfs, sectorFilter]);
 
     const searchResults = useMemo(() => {
         if (!searchQuery) return sortedItems;
@@ -624,14 +654,6 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
             (s.etfs || '').toLowerCase().includes(q)
         );
     }, [sortedItems, searchQuery]);
-
-    const totalPages = Math.max(1, Math.ceil(searchResults.length / PAGE_SIZE));
-    const pagedItems = useMemo(() => {
-        const start = (page - 1) * PAGE_SIZE;
-        return searchResults.slice(start, start + PAGE_SIZE);
-    }, [searchResults, page]);
-
-    useEffect(() => { setPage(1); }, [searchQuery]);
 
     const sortedSectors = useMemo(() => {
         const map = {};
@@ -651,6 +673,7 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
         setMode(newMode);
         setSectors(null);
         setSortAsc(false);
+        setSectorFilter(null);
     };
 
     const explainHeatmap = () => {
@@ -777,6 +800,35 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                     </button>
                 </div>
             </div>
+
+            {mode === 'etfs' && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.75rem', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.65rem', opacity: 0.4, marginRight: '0.2rem' }}>Filter:</span>
+                    <button
+                        className={`btn btn-xs ${!sectorFilter || sectorFilter.length === 0 ? 'btn-primary' : 'btn-ghost'}`}
+                        onClick={() => setSectorFilter(null)}
+                        style={{ fontSize: '0.65rem', padding: '0.15rem 0.4rem' }}
+                    >All</button>
+                    {[...new Set(flatItems.map(i => i.sector).filter(Boolean))].sort().map(sector => {
+                        const active = sectorFilter?.includes(sector);
+                        return (
+                            <button
+                                key={sector}
+                                className={`btn btn-xs ${active ? 'btn-primary' : 'btn-ghost'}`}
+                                onClick={() => {
+                                    if (active) {
+                                        const next = sectorFilter.filter(s => s !== sector);
+                                        setSectorFilter(next.length > 0 ? next : null);
+                                    } else {
+                                        setSectorFilter([...(sectorFilter || []), sector]);
+                                    }
+                                }}
+                                style={{ fontSize: '0.65rem', padding: '0.15rem 0.4rem' }}
+                            >{sector}</button>
+                        );
+                    })}
+                </div>
+            )}
 
             {mode === 'stocks' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -938,7 +990,7 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
 
             {sectors && sortedItems.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px', borderRadius: '8px', overflow: 'hidden' }}>
-                    {pagedItems.map(s => {
+                    {searchResults.map(s => {
                         const ratio = getTileSize(s.change_percent);
                         const sectorColor = s.isCustom ? CUSTOM_COLOR : (SECTOR_PALETTE[s.sector] || '#444');
                         const isHovered = hovered === s.key || hovered === s.ticker;
@@ -1033,28 +1085,6 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                     onClose={() => setIntelTicker(null)}
                     notify={notify}
                 />
-            )}
-
-            {sectors && totalPages > 1 && (
-                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1rem' }}>
-                    <button className="btn btn-xs btn-ghost" disabled={page <= 1} onClick={() => setPage(page - 1)} style={{ fontSize: '0.75rem', padding: '0.3rem 0.6rem' }}>
-                        <ChevronLeft size={14} />
-                    </button>
-                    {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
-                        const start = Math.max(1, Math.min(page - 3, totalPages - 6));
-                        const p = start + i;
-                        if (p > totalPages) return null;
-                        return (
-                            <button key={p} className={`btn btn-xs ${p === page ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setPage(p)}
-                                style={{ fontSize: '0.75rem', padding: '0.3rem 0.6rem', minWidth: '30px' }}>
-                                {p}
-                            </button>
-                        );
-                    })}
-                    <button className="btn btn-xs btn-ghost" disabled={page >= totalPages} onClick={() => setPage(page + 1)} style={{ fontSize: '0.75rem', padding: '0.3rem 0.6rem' }}>
-                        <ChevronRight size={14} />
-                    </button>
-                </div>
             )}
 
             {showGroupEditor && (

@@ -9010,38 +9010,69 @@ INDUSTRY_ETFS = {
     "SPY": {"name": "S&P 500", "sector": "Broad Market", "industry": "Large Cap"},
     "QQQ": {"name": "NASDAQ 100", "sector": "Broad Market", "industry": "Tech/Growth"},
     "IWM": {"name": "Russell 2000", "sector": "Broad Market", "industry": "Small Cap"},
+    "DIA": {"name": "Dow Jones", "sector": "Broad Market", "industry": "Blue Chip"},
     # Technology
     "XLK": {"name": "Technology Select", "sector": "Technology", "industry": "Broad Technology"},
     "SMH": {"name": "Semiconductors", "sector": "Technology", "industry": "Semiconductors"},
     "IGV": {"name": "Software", "sector": "Technology", "industry": "Software"},
     "FDN": {"name": "Internet", "sector": "Technology", "industry": "Internet"},
+    "CIBR": {"name": "Cybersecurity", "sector": "Technology", "industry": "Cybersecurity"},
+    "SKYY": {"name": "Cloud Computing", "sector": "Technology", "industry": "Cloud"},
+    "ROBO": {"name": "Robotics & AI", "sector": "Technology", "industry": "Robotics/AI"},
+    "DRAM": {"name": "Memory", "sector": "Technology", "industry": "Memory Chips"},
     # Financials
     "XLF": {"name": "Financial Select", "sector": "Financial Services", "industry": "Broad Financials"},
     "KBE": {"name": "Bank ETF", "sector": "Financial Services", "industry": "Banks"},
     "KRE": {"name": "Regional Banks", "sector": "Financial Services", "industry": "Regional Banks"},
+    "KIE": {"name": "Insurance", "sector": "Financial Services", "industry": "Insurance"},
     # Healthcare
     "XLV": {"name": "Healthcare Select", "sector": "Healthcare", "industry": "Broad Healthcare"},
     "XBI": {"name": "Biotech", "sector": "Healthcare", "industry": "Biotechnology"},
     "IHI": {"name": "Medical Devices", "sector": "Healthcare", "industry": "Medical Devices"},
+    "IBB": {"name": "Biotech NASDAQ", "sector": "Healthcare", "industry": "Biotech NASDAQ"},
+    "PJP": {"name": "Pharmaceuticals", "sector": "Healthcare", "industry": "Pharmaceuticals"},
+    "XHS": {"name": "Healthcare Services", "sector": "Healthcare", "industry": "Healthcare Services"},
     # Energy
     "XLE": {"name": "Energy Select", "sector": "Energy", "industry": "Broad Energy"},
     "OIH": {"name": "Oil Services", "sector": "Energy", "industry": "Oil Services"},
     "XOP": {"name": "Oil & Gas E&P", "sector": "Energy", "industry": "Oil Exploration"},
+    "URNM": {"name": "Uranium/Nuclear", "sector": "Energy", "industry": "Uranium"},
+    "UCO": {"name": "Crude Oil 2x", "sector": "Energy", "industry": "Crude Oil"},
+    # Clean Energy / Climate
+    "ICLN": {"name": "Clean Energy", "sector": "Clean Energy", "industry": "Renewables"},
+    "TAN": {"name": "Solar Energy", "sector": "Clean Energy", "industry": "Solar"},
+    "LIT": {"name": "Lithium/Battery", "sector": "Clean Energy", "industry": "Lithium/Battery"},
+    "DRIV": {"name": "Electric Vehicles", "sector": "Clean Energy", "industry": "EVs"},
     # Consumer
     "XLY": {"name": "Consumer Disc.", "sector": "Consumer Cyclical", "industry": "Broad Discretionary"},
     "XLP": {"name": "Consumer Staples", "sector": "Consumer Defensive", "industry": "Broad Staples"},
     "XRT": {"name": "Retail", "sector": "Consumer Cyclical", "industry": "Retail"},
+    "PEJ": {"name": "Leisure & Travel", "sector": "Consumer Cyclical", "industry": "Leisure"},
+    "IBUY": {"name": "E-Commerce", "sector": "Consumer Cyclical", "industry": "E-Commerce"},
+    "FTCA": {"name": "Food & Beverage", "sector": "Consumer Defensive", "industry": "Food & Bev"},
     # Industrials
     "XLI": {"name": "Industrial Select", "sector": "Industrials", "industry": "Broad Industrials"},
+    "ITA": {"name": "Aerospace & Defense", "sector": "Industrials", "industry": "Aerospace/Defense"},
+    "IYT": {"name": "Transportation", "sector": "Industrials", "industry": "Transportation"},
+    "XHB": {"name": "Homebuilders", "sector": "Industrials", "industry": "Home Construction"},
     # Materials
     "XLB": {"name": "Materials Select", "sector": "Basic Materials", "industry": "Broad Materials"},
+    "COPX": {"name": "Copper Miners", "sector": "Basic Materials", "industry": "Copper"},
     # Real Estate
     "XLRE": {"name": "Real Estate Select", "sector": "Real Estate", "industry": "Broad Real Estate"},
     "RWR": {"name": "REIT ETF", "sector": "Real Estate", "industry": "REITs"},
+    "VNQ": {"name": "Vanguard REIT", "sector": "Real Estate", "industry": "REITs Broad"},
     # Utilities
     "XLU": {"name": "Utilities Select", "sector": "Utilities", "industry": "Broad Utilities"},
+    "IDU": {"name": "Utilities iShares", "sector": "Utilities", "industry": "Utilities Broad"},
     # Communication
     "XLC": {"name": "Comm. Services", "sector": "Communication Services", "industry": "Broad Communication"},
+    # Cannabis
+    "MJ": {"name": "Cannabis", "sector": "Cannabis", "industry": "Cannabis"},
+    # Water
+    "PHO": {"name": "Water Resources", "sector": "Utilities", "industry": "Water"},
+    # Food/Agriculture
+    "DBA": {"name": "Agriculture", "sector": "Basic Materials", "industry": "Agriculture"},
 }
 
 
