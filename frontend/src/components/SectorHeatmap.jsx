@@ -240,6 +240,8 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
     const [customSectors, setCustomSectors] = useState(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [period, setPeriod] = useState('1d');
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
     const [selectedDetail, setSelectedDetail] = useState(null);
     const [intelTicker, setIntelTicker] = useState(null);
     const [showCustomMin, setShowCustomMin] = useState(false);
@@ -306,7 +308,10 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
         heatmapRequestRef.current = requestId;
         const isCurrentRequest = () => heatmapRequestRef.current === requestId;
         const iv = resolveInterval(period);
-        const params = iv ? `period=1d&interval=${iv}` : `period=${period}`;
+        const useDateRange = dateFrom && dateTo;
+        const params = useDateRange
+            ? `start=${dateFrom}&end=${dateTo}`
+            : (iv ? `period=1d&interval=${iv}` : `period=${period}`);
         const ext = extended ? '&extended=true' : '';
         const cacheKey = `${mode}:${params}${ext}:${tickers.join(',')}`;
         const cached = heatmapCacheStore[cacheKey];
@@ -424,7 +429,7 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
 
     useEffect(() => {
         fetchHeatmap();
-    }, [mode, period, extended, tickers.join(',')]);
+    }, [mode, period, extended, dateFrom, dateTo, tickers.join(',')]);
 
     const addTicker = () => {
         const t = tickerInput.trim().toUpperCase();
@@ -764,6 +769,31 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                             <span style={{ fontSize: '0.6rem', background: 'var(--bg-accent)', color: 'var(--accent)', padding: '0.1rem 0.3rem', borderRadius: '3px', whiteSpace: 'nowrap' }}>Extended hour</span>
                         )}
                     </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <input
+                            type="date"
+                            value={dateFrom}
+                            onChange={e => setDateFrom(e.target.value)}
+                            style={{ fontSize: '0.7rem', padding: '0.2rem 0.35rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', outline: 'none' }}
+                            title="From date"
+                        />
+                        <span style={{ fontSize: '0.7rem', opacity: 0.5 }}>–</span>
+                        <input
+                            type="date"
+                            value={dateTo}
+                            onChange={e => setDateTo(e.target.value)}
+                            style={{ fontSize: '0.7rem', padding: '0.2rem 0.35rem', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', outline: 'none' }}
+                            title="To date"
+                        />
+                        {(dateFrom || dateTo) && (
+                            <button
+                                className="btn btn-xs btn-ghost"
+                                onClick={() => { setDateFrom(''); setDateTo(''); }}
+                                style={{ fontSize: '0.65rem', padding: '0.15rem 0.3rem', opacity: 0.6 }}
+                                title="Clear date range"
+                            >×</button>
+                        )}
+                    </div>
                     <button className="btn btn-xs btn-ghost" onClick={() => setSortAsc(!sortAsc)} title={sortAsc ? 'Sorted ascending' : 'Sorted descending'} style={{ fontSize: '0.7rem', padding: '0.25rem 0.4rem' }}>
                         <ArrowUpDown size={12} style={{ marginRight: '2px' }} />
                         {sortAsc ? 'Low' : 'High'}
@@ -1071,6 +1101,8 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                     getTileColor={getTileColor}
                     period={period}
                     extended={extended}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
                     onIntelTicker={t => setIntelTicker(t)}
                     onClose={() => setSelectedDetail(null)}
                 />
@@ -1169,7 +1201,7 @@ const GroupEditor = ({ groups, editingIndex, onEdit, onSave, onDelete, onCancel 
     );
 };
 
-const DetailPanel = ({ item, mode, sectors, customSectors, customGroups, formatValue, getTileColor, period, extended, onIntelTicker, onClose }) => {
+const DetailPanel = ({ item, mode, sectors, customSectors, customGroups, formatValue, getTileColor, period, extended, dateFrom, dateTo, onIntelTicker, onClose }) => {
     const entries = useMemo(() => {
         if (!sectors) return [];
         const result = [];
@@ -1299,13 +1331,16 @@ const DetailPanel = ({ item, mode, sectors, customSectors, customGroups, formatV
         if (mode === 'etfs' && entries.length > 0) {
             const etfTickers = entries.map(e => e.ticker);
             const iv = resolveInterval(period);
-            const params = iv ? `period=1d&interval=${iv}` : `period=${period}`;
+            const useDateRange = dateFrom && dateTo;
+            const params = useDateRange
+                ? `start=${dateFrom}&end=${dateTo}`
+                : (iv ? `period=1d&interval=${iv}` : `period=${period}`);
             const ext = extended ? '&extended=true' : '';
             axios.post(`${INTELLIGENCE_SERVICE}/etf-holdings?${params}${ext}`, etfTickers)
                 .then(res => setHoldings(res.data.holdings))
                 .catch(() => {});
         }
-    }, [mode, entries, period, extended]);
+    }, [mode, entries, period, extended, dateFrom, dateTo]);
 
     const insiderTickerSource = useMemo(() => {
         if (mode === 'stocks' && item.isGroup) {

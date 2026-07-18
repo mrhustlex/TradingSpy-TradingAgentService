@@ -524,6 +524,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         return Boolean(localStorage.getItem(keyStorage) || serverConfigured);
     };
     const [responseLength, setResponseLength] = useState(localStorage.getItem('response_length') || 'mid');
+    const [customWordLimit, setCustomWordLimit] = useState(localStorage.getItem('custom_word_limit') || '');
     const [thinkingDetail, setThinkingDetail] = useState(localStorage.getItem('thinking_detail') || 'normal');
     const [showLiveThinking, setShowLiveThinking] = useState(localStorage.getItem('show_live_thinking') !== 'false');
     const [agentInstructions, setAgentInstructions] = useState(localStorage.getItem('agent_instructions') || '');
@@ -1952,6 +1953,9 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     };
 
     const getMaxTokens = () => {
+        if (customWordLimit && !isNaN(customWordLimit) && Number(customWordLimit) > 0) {
+            return Math.round(Number(customWordLimit) * 1.3);
+        }
         const lengths = { short: 2048, mid: 8192, long: 16384 };
         return lengths[responseLength] || 8192;
     };
@@ -4121,6 +4125,37 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                     {len}
                                 </button>
                             ))}
+                        </div>
+                        <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <input
+                                type="number"
+                                min="50"
+                                max="100000"
+                                placeholder="Custom word limit"
+                                value={customWordLimit}
+                                onChange={e => {
+                                    setCustomWordLimit(e.target.value);
+                                    localStorage.setItem('custom_word_limit', e.target.value);
+                                }}
+                                style={{
+                                    flex: 1,
+                                    padding: '0.35rem 0.5rem',
+                                    fontSize: '0.75rem',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(255,255,255,0.1)',
+                                    background: 'rgba(255,255,255,0.05)',
+                                    color: 'var(--text-primary)',
+                                    outline: 'none',
+                                }}
+                            />
+                            {customWordLimit && (
+                                <button
+                                    onClick={() => { setCustomWordLimit(''); localStorage.removeItem('custom_word_limit'); }}
+                                    style={{ padding: '0.35rem 0.5rem', fontSize: '0.7rem', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(255,255,255,0.5)', cursor: 'pointer' }}
+                                >
+                                    Reset
+                                </button>
+                            )}
                         </div>
                     </div>
 
