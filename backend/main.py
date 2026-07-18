@@ -8290,7 +8290,7 @@ async def get_batch_quotes(tickers: List[str]):
     return {"quotes": market_intel.get_batch_quotes(tickers)}
 
 @app.post("/api/intelligence/batch-price-changes")
-async def get_batch_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False):
+async def get_batch_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None):
     """Get fast price/change rows for movers without per-ticker metadata calls."""
     clean_tickers = []
     seen = set()
@@ -8302,12 +8302,12 @@ async def get_batch_price_changes(tickers: List[str], period: str = "1d", interv
     if not clean_tickers:
         return {"quotes": []}
 
-    cache_key = f"batch_price_changes:{period}:{interval or 'auto'}:ext={int(extended)}:v3:{','.join(clean_tickers)}"
+    cache_key = f"batch_price_changes:{period}:{interval or 'auto'}:ext={int(extended)}:v3:{','.join(clean_tickers)}:{start or ''}:{end or ''}"
     cached = _get_cached(cache_key, ttl=45)
     if cached is not None:
         return cached
 
-    prices = await _bulk_price_changes(clean_tickers, period, interval, extended)
+    prices = await _bulk_price_changes(clean_tickers, period, interval, extended, start=start, end=end)
     quotes = []
     for ticker in clean_tickers:
         row = prices.get(ticker) or {}
@@ -9014,49 +9014,84 @@ INDUSTRY_ETFS = {
     "SPY": {"name": "S&P 500", "sector": "Broad Market", "industry": "Large Cap"},
     "QQQ": {"name": "NASDAQ 100", "sector": "Broad Market", "industry": "Tech/Growth"},
     "IWM": {"name": "Russell 2000", "sector": "Broad Market", "industry": "Small Cap"},
+    "DIA": {"name": "Dow Jones", "sector": "Broad Market", "industry": "Blue Chip"},
     # Technology
     "XLK": {"name": "Technology Select", "sector": "Technology", "industry": "Broad Technology"},
     "SMH": {"name": "Semiconductors", "sector": "Technology", "industry": "Semiconductors"},
     "IGV": {"name": "Software", "sector": "Technology", "industry": "Software"},
     "FDN": {"name": "Internet", "sector": "Technology", "industry": "Internet"},
+    "CIBR": {"name": "Cybersecurity", "sector": "Technology", "industry": "Cybersecurity"},
+    "SKYY": {"name": "Cloud Computing", "sector": "Technology", "industry": "Cloud"},
+    "ROBO": {"name": "Robotics & AI", "sector": "Technology", "industry": "Robotics/AI"},
+    "DRAM": {"name": "Memory", "sector": "Technology", "industry": "Memory Chips"},
     # Financials
     "XLF": {"name": "Financial Select", "sector": "Financial Services", "industry": "Broad Financials"},
     "KBE": {"name": "Bank ETF", "sector": "Financial Services", "industry": "Banks"},
     "KRE": {"name": "Regional Banks", "sector": "Financial Services", "industry": "Regional Banks"},
+    "KIE": {"name": "Insurance", "sector": "Financial Services", "industry": "Insurance"},
     # Healthcare
     "XLV": {"name": "Healthcare Select", "sector": "Healthcare", "industry": "Broad Healthcare"},
     "XBI": {"name": "Biotech", "sector": "Healthcare", "industry": "Biotechnology"},
     "IHI": {"name": "Medical Devices", "sector": "Healthcare", "industry": "Medical Devices"},
+    "IBB": {"name": "Biotech NASDAQ", "sector": "Healthcare", "industry": "Biotech NASDAQ"},
+    "PJP": {"name": "Pharmaceuticals", "sector": "Healthcare", "industry": "Pharmaceuticals"},
+    "XHS": {"name": "Healthcare Services", "sector": "Healthcare", "industry": "Healthcare Services"},
     # Energy
     "XLE": {"name": "Energy Select", "sector": "Energy", "industry": "Broad Energy"},
     "OIH": {"name": "Oil Services", "sector": "Energy", "industry": "Oil Services"},
     "XOP": {"name": "Oil & Gas E&P", "sector": "Energy", "industry": "Oil Exploration"},
+    "URNM": {"name": "Uranium/Nuclear", "sector": "Energy", "industry": "Uranium"},
+    "UCO": {"name": "Crude Oil 2x", "sector": "Energy", "industry": "Crude Oil"},
+    # Clean Energy / Climate
+    "ICLN": {"name": "Clean Energy", "sector": "Clean Energy", "industry": "Renewables"},
+    "TAN": {"name": "Solar Energy", "sector": "Clean Energy", "industry": "Solar"},
+    "LIT": {"name": "Lithium/Battery", "sector": "Clean Energy", "industry": "Lithium/Battery"},
+    "DRIV": {"name": "Electric Vehicles", "sector": "Clean Energy", "industry": "EVs"},
     # Consumer
     "XLY": {"name": "Consumer Disc.", "sector": "Consumer Cyclical", "industry": "Broad Discretionary"},
     "XLP": {"name": "Consumer Staples", "sector": "Consumer Defensive", "industry": "Broad Staples"},
     "XRT": {"name": "Retail", "sector": "Consumer Cyclical", "industry": "Retail"},
+    "PEJ": {"name": "Leisure & Travel", "sector": "Consumer Cyclical", "industry": "Leisure"},
+    "IBUY": {"name": "E-Commerce", "sector": "Consumer Cyclical", "industry": "E-Commerce"},
+    "FTCA": {"name": "Food & Beverage", "sector": "Consumer Defensive", "industry": "Food & Bev"},
     # Industrials
     "XLI": {"name": "Industrial Select", "sector": "Industrials", "industry": "Broad Industrials"},
+    "ITA": {"name": "Aerospace & Defense", "sector": "Industrials", "industry": "Aerospace/Defense"},
+    "IYT": {"name": "Transportation", "sector": "Industrials", "industry": "Transportation"},
+    "XHB": {"name": "Homebuilders", "sector": "Industrials", "industry": "Home Construction"},
     # Materials
     "XLB": {"name": "Materials Select", "sector": "Basic Materials", "industry": "Broad Materials"},
+    "COPX": {"name": "Copper Miners", "sector": "Basic Materials", "industry": "Copper"},
     # Real Estate
     "XLRE": {"name": "Real Estate Select", "sector": "Real Estate", "industry": "Broad Real Estate"},
     "RWR": {"name": "REIT ETF", "sector": "Real Estate", "industry": "REITs"},
+    "VNQ": {"name": "Vanguard REIT", "sector": "Real Estate", "industry": "REITs Broad"},
     # Utilities
     "XLU": {"name": "Utilities Select", "sector": "Utilities", "industry": "Broad Utilities"},
+    "IDU": {"name": "Utilities iShares", "sector": "Utilities", "industry": "Utilities Broad"},
     # Communication
     "XLC": {"name": "Comm. Services", "sector": "Communication Services", "industry": "Broad Communication"},
+    # Cannabis
+    "MJ": {"name": "Cannabis", "sector": "Cannabis", "industry": "Cannabis"},
+    # Water
+    "PHO": {"name": "Water Resources", "sector": "Utilities", "industry": "Water"},
+    # Food/Agriculture
+    "DBA": {"name": "Agriculture", "sector": "Basic Materials", "industry": "Agriculture"},
 }
 
 
-def _calc_change_pct(ticker: str, period: str, interval: str = None, extended: bool = False):
+def _calc_change_pct(ticker: str, period: str, interval: str = None, extended: bool = False, start: str = None, end: str = None):
     """Calculate return for a ticker over a given period using yfinance history."""
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
-        kwargs = {"period": "2d" if (not interval and period == "1d") else period}
+        if start and end:
+            kwargs = {"start": start, "end": end}
+        else:
+            kwargs = {"period": "2d" if (not interval and period == "1d") else period}
         if interval:
-            kwargs["period"] = "1d"
+            if not (start and end):
+                kwargs["period"] = "1d"
             kwargs["interval"] = interval
             if extended:
                 kwargs["prepost"] = True
@@ -9274,7 +9309,7 @@ def _build_intraday_change(latest_price, previous_close, volume=None):
         "volume": int(volume) if volume is not None else None,
     }
 
-async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False) -> dict:
+async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None) -> dict:
     """Fetch price/change data for many tickers with live intraday handling for 1D."""
     import yfinance as yf
     loop = asyncio.get_event_loop()
@@ -9282,9 +9317,39 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
     if not clean_tickers:
         return {}
 
+    use_date_range = bool(start and end)
     prices = {}
     try:
-        if not interval and period == "1d":
+        if use_date_range:
+            kwargs = {"start": start, "end": end, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
+            if interval:
+                kwargs["interval"] = interval
+                if extended:
+                    kwargs["prepost"] = True
+            bulk = await loop.run_in_executor(None, lambda: _locked_yf_download(yf, clean_tickers, **kwargs))
+            if bulk is not None and not bulk.empty:
+                for ticker in clean_tickers:
+                    try:
+                        frame = _extract_yf_ticker_frame(bulk, ticker)
+                        if frame is None or "Close" not in frame:
+                            continue
+                        vals, volume_series, session_label = _session_anchored_intraday_values(frame, extended and bool(interval))
+                        vol_vals = volume_series.dropna().values if volume_series is not None else None
+                        if len(vals) >= 2 and vals[0]:
+                            built = {
+                                "price": float(vals[-1]),
+                                "change_percent": (vals[-1] - vals[0]) / vals[0] * 100,
+                                "change": float(vals[-1] - vals[0]),
+                                "volume": int(vol_vals[-1]) if vol_vals is not None and len(vol_vals) > 0 else None,
+                                "session": session_label,
+                            }
+                            _enrich_with_daily_stats(built, frame)
+                            prices[ticker] = built
+                        elif len(vals) == 1:
+                            prices[ticker] = {"price": float(vals[0]), "change_percent": None, "change": None, "volume": None}
+                    except Exception:
+                        pass
+        elif not interval and period == "1d":
             def download_intraday_and_daily():
                 with _yf_download_lock:
                     intraday_data = yf.download(
@@ -9443,13 +9508,13 @@ async def industry_heatmap(tickers: Optional[List[str]] = Body(None), period: st
 
 
 @app.post("/api/intelligence/sector-heatmap")
-async def sector_heatmap(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False):
+async def sector_heatmap(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None):
     """Get sector/industry breakdown with performance for a list of tickers (parallelized)"""
     loop = asyncio.get_event_loop()
     # Fetch price data for all tickers at once via download
     all_prices = {}
     try:
-        fetched_prices = await _bulk_price_changes(tickers, period, interval, extended)
+        fetched_prices = await _bulk_price_changes(tickers, period, interval, extended, start=start, end=end)
         all_prices = {
             ticker: {"price": data.get("price"), "change_pct": data.get("change_percent"), "change": data.get("change")}
             for ticker, data in fetched_prices.items()
@@ -9462,7 +9527,7 @@ async def sector_heatmap(tickers: List[str], period: str = "1d", interval: str =
     results = []
     for i in range(0, len(tickers), BATCH_SIZE):
         batch = tickers[i:i+BATCH_SIZE]
-        tasks = [loop.run_in_executor(None, lambda t=t, p=period, iv=interval, ex=extended: _fetch_sector_info_fast(t, p, iv, ex, all_prices.get(t))) for t in batch]
+        tasks = [loop.run_in_executor(None, lambda t=t, p=period, iv=interval, ex=extended, s=start, e=end: _fetch_sector_info_fast(t, p, iv, ex, all_prices.get(t), start=s, end=e)) for t in batch]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
         results.extend(batch_results)
     sectors = {}
@@ -9488,19 +9553,19 @@ async def sector_heatmap(tickers: List[str], period: str = "1d", interval: str =
     return {"sectors": sectors}
 
 
-def _fetch_sector_info_fast(ticker: str, period: str = "1d", interval: str = None, extended: bool = False, prefetched: dict = None) -> dict:
+def _fetch_sector_info_fast(ticker: str, period: str = "1d", interval: str = None, extended: bool = False, prefetched: dict = None, start: str = None, end: str = None) -> dict:
     """Fetch sector info with caching; uses pre-fetched price data if available."""
-    cache_key = f"sector:{ticker}:{period}:{interval or 'auto'}:ext={int(extended)}"
+    cache_key = f"sector:{ticker}:{period}:{interval or 'auto'}:ext={int(extended)}:{start or ''}:{end or ''}"
     cached = _get_cached(cache_key)
     if cached is not None:
         return cached
-    result = _fetch_with_retry(lambda: _fetch_sector_info_raw(ticker, period, interval, extended, prefetched))
+    result = _fetch_with_retry(lambda: _fetch_sector_info_raw(ticker, period, interval, extended, prefetched, start=start, end=end))
     if result is not None:
         _set_cache(cache_key, result)
     return result
 
 
-def _fetch_sector_info_raw(ticker: str, period: str = "1d", interval: str = None, extended: bool = False, prefetched: dict = None) -> dict:
+def _fetch_sector_info_raw(ticker: str, period: str = "1d", interval: str = None, extended: bool = False, prefetched: dict = None, start: str = None, end: str = None) -> dict:
     """Fetch sector/industry + quote for a single ticker (no cache/retry)."""
     try:
         import yfinance as yf
@@ -9514,7 +9579,9 @@ def _fetch_sector_info_raw(ticker: str, period: str = "1d", interval: str = None
             change = prefetched.get("change")
             change_pct = prefetched.get("change_pct")
         else:
-            if interval and extended:
+            if start and end:
+                change_pct, price, change = _calc_change_pct(ticker, period, interval, extended, start=start, end=end)
+            elif interval and extended:
                 change_pct, price, change = _calc_change_pct(ticker, period, interval, extended)
                 if change_pct is None:
                     price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
@@ -9566,13 +9633,13 @@ def _fetch_sector_info(ticker: str, period: str = "1d", interval: str = None, ex
 
 
 @app.post("/api/intelligence/etf-holdings")
-async def etf_holdings(etf_tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False):
+async def etf_holdings(etf_tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None):
     """Get top holdings of one or more ETFs with per-stock performance data."""
     loop = asyncio.get_event_loop()
     results = {}
     for etf_ticker in etf_tickers:
         try:
-            cache_key = f"holdings:{etf_ticker}:{period}:{interval or 'auto'}:ext={int(extended)}"
+            cache_key = f"holdings:{etf_ticker}:{period}:{interval or 'auto'}:ext={int(extended)}:{start or ''}:{end or ''}"
             cached = _get_cached(cache_key)
             if cached is not None:
                 results[etf_ticker] = _sanitize_nan(cached)
@@ -9596,14 +9663,14 @@ async def etf_holdings(etf_tickers: List[str], period: str = "1d", interval: str
             top = sorted(holdings.items(), key=lambda x: x[1], reverse=True)[:50]
             holding_results = []
             tickers_to_fetch = [sym for sym, _ in top]
-            price_changes = await _bulk_price_changes(tickers_to_fetch, period, interval, extended)
+            price_changes = await _bulk_price_changes(tickers_to_fetch, period, interval, extended, start=start, end=end)
             missing = [sym for sym in tickers_to_fetch if sym not in price_changes]
             fallback_changes = {}
             if missing:
                 BATCH = 5
                 for i in range(0, len(missing), BATCH):
                     batch = missing[i:i+BATCH]
-                    tasks = [loop.run_in_executor(None, lambda s=s, p=period, iv=interval, ex=extended: _calc_change_pct(s, p, iv, ex)) for s in batch]
+                    tasks = [loop.run_in_executor(None, lambda s=s, p=period, iv=interval, ex=extended, st=start, en=end: _calc_change_pct(s, p, iv, ex, start=st, end=en)) for s in batch]
                     batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                     for sym, r in zip(batch, batch_results):
                         if isinstance(r, Exception) or r is None:
