@@ -76,28 +76,14 @@ For insider buy/sell questions, the assistant uses deterministic tool-backed res
 
 Not every question needs an agent. TradingSpy ships a full market dashboard for quick, deterministic results.
 
-| Component | Details |
-| --- | --- |
-| **Sector Heatmap** | Color-coded grid of 25+ industry proxy ETFs grouped by sector. 16 time periods (1 min – max + YTD), extended hours toggle, search/filter, custom groups, and an **Explain** button that sends the heatmap to the AI assistant for analysis. Two display modes: industry ETFs or watchlist stocks. |
-| **Industry Movements** | Tracks individual stock price changes across 12 time windows (1 min to 1 year) for 68+ major US stocks. Universe presets: High Cap, Semis, Software/AI, Leverage. |
-| **Stock Prediction** | Probabilistic price paths with 80% uncertainty bands for any ticker. Reads recent OHLCV bars, derives momentum, trend, mean-reversion, RSI, volume, and volatility context, then renders a central path with one-click CSV export. |
-| **Trading Agent** | AI-powered chat agent that analyzes your market data, answers questions, generates strategies, and runs backtests — all from a single conversation thread. |
+| Component | Details | Screenshot |
+| --- | --- |--|
+| **Sector Heatmap** | Color-coded grid of 25+ industry proxy ETFs grouped by sector. 16 time periods (1 min – max + YTD), extended hours toggle, search/filter, custom groups, and an **Explain** button that sends the heatmap to the AI assistant for analysis. Two display modes: industry ETFs or watchlist stocks. | <p align="center">   <img src="docs/images/UI/Market Overview.png" alt="Sector Heatmap" width="80%"/> </p> |
+| **Industry Movements** | Tracks individual stock price changes across 12 time windows (1 min to 1 year) for 68+ major US stocks. Universe presets: High Cap, Semis, Software/AI, Leverage. | <p align="center">   <img src="docs/images/UI/Movement.png" alt="Industry Movements" width="80%"/> </p> |
+| **Stock Prediction** | Probabilistic price paths with 80% uncertainty bands for any ticker. Reads recent OHLCV bars, derives momentum, trend, mean-reversion, RSI, volume, and volatility context, then renders a central path with one-click CSV export. | <p align="center">   <img src="docs/images/UI/Price Prediction.png" alt="Stock Prediction" width="80%"/> </p> |
+| **Trading Agent** | AI-powered chat agent that analyzes your market data, answers questions, generates strategies, and runs backtests — all from a single conversation thread. |  <p align="center">   <img src="docs/images/agent/agent.gif" alt="Trading Agent" width="80%"/> </p> |
 
-<p align="center">
-  <img src="docs/images/UI/Market Overview.png" alt="Sector Heatmap" width="80%"/>
-</p>
 
-<p align="center">
-  <img src="docs/images/UI/Movement.png" alt="Industry Movements" width="80%"/>
-</p>
-
-<p align="center">
-  <img src="docs/images/UI/Price Prediction.png" alt="Stock Prediction" width="80%"/>
-</p>
-
-<p align="center">
-  <img src="docs/images/agent/agent.gif" alt="Trading Agent" width="80%"/>
-</p>
 
 ---
 
