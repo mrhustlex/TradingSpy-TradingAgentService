@@ -1,4 +1,4 @@
-const API_BASE = `${window.location.protocol}//${window.location.host}/api`;
+export const API_BASE = `${window.location.protocol}//${window.location.host}/api`;
 
 // Clean up any incorrect localStorage values from previous versions
 const cleanupLocalStorage = () => {
