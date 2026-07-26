@@ -191,6 +191,17 @@ docker compose up -d --build
 | API docs | http://localhost:8000/docs |
 | SearXNG | http://localhost:8080 |
 
+Remote agent outputs can be enabled without the UI using `.env`:
+
+```bash
+ENABLE_OPENAI_COMPATIBLE_OUTPUT=true
+ENABLE_ACP_AGENT_OUTPUT=true
+ENABLE_A2A_REMOTE_AGENT_OUTPUT=true
+REMOTE_AGENT_AUTH_TOKEN=change-me
+```
+
+When A2A is enabled, the agent card at `/.well-known/agent-card.json` exposes skills including `assistant`, `market-review`, `strategy-create`, `strategy-race`, and `fundamental-screener`.
+
 ### 3. Stop
 
 ```bash
@@ -198,6 +209,10 @@ docker compose down
 ```
 
 Runtime data remains under `backend/data/`. Pull updates and rebuild with `git pull && docker compose up -d --build`.
+
+## ACP Skill Bundle for Other Agents
+
+Use `skills/skills.md` for a ready-to-use ACP skill contract that targets the same UI runtime via ACP `agent_name="ui-assistant"`.
 
 ---
 

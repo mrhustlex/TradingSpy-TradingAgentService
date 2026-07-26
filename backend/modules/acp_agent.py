@@ -10,8 +10,10 @@ import json
 import logging
 import os
 import time
+import asyncio
+import threading
 from datetime import datetime, timezone
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Body
 from pydantic import BaseModel, Field
 
@@ -155,6 +157,25 @@ AGENTS = {
         },
         status={"success_rate": 100, "avg_run_time_seconds": 1.0},
     ),
+    "ui-assistant": AgentManifest(
+        name="ui-assistant",
+        description="Run the same UI assistant runtime: general chat via /api/backtest/ai/chat-with-tools and explicit workflows via /api/agent/runs (market_review, strategy_create, strategy_race, fundamental_screener).",
+        input_content_types=["application/json", "text/plain"],
+        output_content_types=["application/json"],
+        metadata={
+            "capabilities": [
+                {"name": "General Assistant Chat", "description": "Same tool-using assistant path as the web UI chat."},
+                {"name": "Market Review", "description": "Same market review workflow as the UI."},
+                {"name": "Strategy Create", "description": "Same strategy generation workflow as the UI."},
+                {"name": "Strategy Race", "description": "Same iterative benchmark workflow as the UI."},
+                {"name": "Fundamental Screener", "description": "Same screener workflow as the UI."},
+            ],
+            "domains": ["finance", "trading", "assistant"],
+            "framework": "ui-runtime-proxy",
+            "programming_language": "Python",
+        },
+        status={"success_rate": 100, "avg_run_time_seconds": 45.0},
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -172,6 +193,23 @@ def _run_id():
 
 def _session_id():
     return str(uuid.uuid4())
+
+def _run_async_in_thread(coro):
+    """Run an async coroutine from sync code even when an event loop is already running."""
+    result = {"value": None, "error": None}
+
+    def _runner():
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if result["error"] is not None:
+        raise result["error"]
+    return result["value"]
 
 def _get_or_create_session(session_id: str) -> dict:
     if session_id not in sessions:
@@ -285,12 +323,8 @@ def _execute_backtest(run: dict, input_text: str):
             run["status"] = "completed"
 
         elif cmd.get("action") == "run":
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                task_id = _run_id()
-                loop.run_until_complete(run_backtests_task(
+            task_id = _run_id()
+            _run_async_in_thread(run_backtests_task(
                     task_id=task_id,
                     dataset_filename=cmd["dataset"],
                     strategies=cmd["strategies"],
@@ -301,8 +335,6 @@ def _execute_backtest(run: dict, input_text: str):
                     sequential=cmd.get("sequential", False),
                     user_id="local_user",
                 ))
-            finally:
-                loop.close()
             run["output"] = [Message(role="agent", parts=[MessagePart(
                 content_type="application/json", content=json.dumps({"task_id": task_id, "status": "started"})
             )])]
@@ -461,12 +493,215 @@ def _execute_strategy(run: dict, input_text: str):
 
     run["finished_at"] = _now()
 
+def _execute_ui_assistant(run: dict, input_text: str):
+    """Execute the same workflow runtime used by the UI /api/agent/runs."""
+    from main import (
+        AgentRunRequest,
+        AIChatRequest,
+        LOCAL_USER_ID,
+        _agent_plan_for_request,
+        _safe_agent_run,
+        agent_run_task,
+        agent_runs,
+        agent_runs_table,
+        chat_with_tools_streaming,
+        normalize_agent_run_request,
+    )
+    from tinydb import Query
+
+    class _InternalRequest:
+        async def is_disconnected(self):
+            return False
+
+    async def _run_ui_chat(cmd: Dict[str, Any], prompt: str) -> Dict[str, Any]:
+        request = AIChatRequest(
+            message=prompt,
+            intent=cmd.get("intent") or "general",
+            api_key=cmd.get("api_key"),
+            provider_config=cmd.get("provider_config"),
+            provider=cmd.get("provider"),
+            model=cmd.get("model"),
+            available_files=cmd.get("available_files") or [],
+            available_strategies=cmd.get("available_strategies") or [],
+            context=cmd.get("context") or {},
+            history=cmd.get("history") or [],
+            history_limit=int(cmd.get("history_limit") or 20),
+            thinking_detail=cmd.get("thinking_detail") or "normal",
+            agent_instructions=cmd.get("agent_instructions"),
+            max_tokens=int(cmd.get("max_tokens") or 8192),
+        )
+        streaming = await chat_with_tools_streaming(request, _InternalRequest())
+
+        done_event = None
+        latest_response = ""
+        error_message = None
+        buffer = ""
+
+        async for chunk in streaming.body_iterator:
+            text = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+            buffer += text
+            lines = buffer.split("\n")
+            buffer = lines.pop() if lines else ""
+            for line in lines:
+                if not line.startswith("data: "):
+                    continue
+                raw = line[6:].strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except Exception:
+                    continue
+                event_type = event.get("type")
+                if event_type == "response" and isinstance(event.get("content"), str):
+                    latest_response = event["content"]
+                elif event_type == "done":
+                    done_event = event
+                elif event_type == "error":
+                    error_message = event.get("content") or "Chat streaming failed"
+
+        if done_event is None and error_message:
+            raise RuntimeError(error_message)
+
+        return {
+            "response": latest_response,
+            "thinking": (done_event or {}).get("thinking"),
+            "steps": (done_event or {}).get("steps") or [],
+            "tools_used": (done_event or {}).get("tools_used") or [],
+            "data": (done_event or {}).get("data") or {},
+            "triggered_tasks": (done_event or {}).get("triggered_tasks") or [],
+            "suggestions": (done_event or {}).get("suggestions") or [],
+        }
+
+    try:
+        cmd = json.loads(input_text) if input_text.startswith("{") else {"prompt": input_text.strip()}
+    except json.JSONDecodeError:
+        cmd = {"prompt": input_text.strip()}
+
+    prompt = (cmd.get("prompt") or cmd.get("message") or input_text or "").strip()
+    if not prompt:
+        raise ValueError("prompt is required")
+
+    run["status"] = "in-progress"
+
+    try:
+        workflow = cmd.get("workflow")
+
+        # General assistant questions (no explicit workflow) use the same
+        # frontend path: /api/backtest/ai/chat-with-tools.
+        if not workflow:
+            chat_payload = _run_async_in_thread(_run_ui_chat(cmd, prompt))
+            run["output"] = [Message(role="agent", parts=[MessagePart(
+                content_type="application/json", content=json.dumps(chat_payload, default=str)
+            )])]
+            run["status"] = "completed"
+            run["finished_at"] = _now()
+            return
+
+        request = normalize_agent_run_request(AgentRunRequest(
+            workflow=workflow,
+            prompt=prompt,
+            ticker=cmd.get("ticker"),
+            dataset_filename=cmd.get("dataset_filename"),
+            period=cmd.get("period") or "5y",
+            interval=cmd.get("interval") or "1d",
+            extended_hours=bool(cmd.get("extended_hours", False)),
+            candidate_count=int(cmd.get("candidate_count") or 3),
+            max_backtest_workers=int(cmd.get("max_backtest_workers") or 4),
+            max_rounds=int(cmd.get("max_rounds") or 30),
+            stop_after_no_improvement=int(cmd.get("stop_after_no_improvement") or 5),
+            benchmark_buy_hold=bool(cmd.get("benchmark_buy_hold", True)),
+            benchmark_strategy=cmd.get("benchmark_strategy"),
+            benchmark_mode=cmd.get("benchmark_mode") or "auto",
+            require_fresh_data=bool(cmd.get("require_fresh_data", True)),
+            strategies=cmd.get("strategies") or [],
+            start_date=cmd.get("start_date"),
+            end_date=cmd.get("end_date"),
+            stake_range=cmd.get("stake_range"),
+            trail_range=cmd.get("trail_range"),
+            sequential=bool(cmd.get("sequential", False)),
+            initial_cash=float(cmd.get("initial_cash") or 100000.0),
+            commission=float(cmd.get("commission") or 0.001),
+            available_files=cmd.get("available_files") or [],
+            available_strategies=cmd.get("available_strategies") or [],
+            history=cmd.get("history") or [],
+            history_limit=int(cmd.get("history_limit") or 20),
+            thinking_detail=cmd.get("thinking_detail") or "normal",
+            agent_instructions=cmd.get("agent_instructions"),
+            max_tokens=int(cmd.get("max_tokens") or 8192),
+            api_key=cmd.get("api_key"),
+            provider_config=cmd.get("provider_config"),
+            provider=cmd.get("provider"),
+            model=cmd.get("model"),
+            screen_universe=cmd.get("screen_universe"),
+            screen_requirements=cmd.get("screen_requirements"),
+            screen_max_results=int(cmd.get("screen_max_results") or 5),
+            screen_max_checked=int(cmd.get("screen_max_checked") or 30),
+            target_min_roi=cmd.get("target_min_roi"),
+        ))
+
+        agent_run_id = f"AGENT_{uuid.uuid4().hex[:10].upper()}"
+        ui_run = {
+            "run_id": agent_run_id,
+            "workflow": request.workflow,
+            "status": "queued",
+            "progress": 0,
+            "current_step": "Queued from ACP",
+            "events": [{"ts": _now(), "type": "queued", "message": "Queued from ACP ui-assistant"}],
+            "plan_steps": _agent_plan_for_request(request),
+            "config": request.dict(),
+            "created_at": datetime.now().isoformat(),
+            "user_id": LOCAL_USER_ID,
+            "stop_requested": False,
+            "source": "acp",
+        }
+        agent_runs[agent_run_id] = ui_run
+        agent_runs_table.upsert(_safe_agent_run(ui_run), Query().run_id == agent_run_id)
+
+        _run_async_in_thread(agent_run_task(agent_run_id, request))
+
+        final = agent_runs.get(agent_run_id) or agent_runs_table.get(Query().run_id == agent_run_id) or {}
+        final_status = (final.get("status") or "failed").lower()
+        payload = {
+            "agent_run_id": agent_run_id,
+            "workflow": request.workflow,
+            "status": final_status,
+            "current_step": final.get("current_step"),
+            "progress": final.get("progress"),
+            "summary_text": final.get("summary_text"),
+            "summary": final.get("summary"),
+            "outcome": final.get("outcome"),
+            "accepted_version": final.get("accepted_version"),
+            "comparison_benchmark": final.get("comparison_benchmark"),
+            "baseline_result": final.get("baseline_result"),
+            "error": final.get("error"),
+            "events_tail": (final.get("events") or [])[-20:],
+            "plan_steps": final.get("plan_steps"),
+            "dataset_filename": final.get("dataset_filename"),
+            "ticker": final.get("ticker"),
+        }
+        run["output"] = [Message(role="agent", parts=[MessagePart(
+            content_type="application/json", content=json.dumps(payload, default=str)
+        )])]
+        run["status"] = final_status if final_status in {"completed", "failed", "stopped", "cancelled"} else "completed"
+        if run["status"] == "failed":
+            err = final.get("error") or "UI runtime workflow failed"
+            run["error"] = Error(code="ui_runtime_failed", message=str(err))
+
+    except Exception as e:
+        logger.exception("ui-assistant run failed")
+        run["status"] = "failed"
+        run["error"] = Error(code="server_error", message=str(e))
+
+    run["finished_at"] = _now()
+
 
 _EXECUTORS = {
     "market-data": _execute_market_data,
     "backtest": _execute_backtest,
     "intelligence": _execute_intelligence,
     "strategy": _execute_strategy,
+    "ui-assistant": _execute_ui_assistant,
 }
 
 # ---------------------------------------------------------------------------

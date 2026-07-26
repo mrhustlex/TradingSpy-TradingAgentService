@@ -610,12 +610,12 @@ const MoverStockDetail = ({ ticker, mover, onClose, onExplain, onSearchInSignal 
 };
 
 const SIGNAL_BADGE_HELP = {
-    'Confirmed momentum': 'Move score is at least 1.8 and volume is at least 1.2x its recent average.',
-    'Abnormal move': 'Move score is at least 1.8, but volume does not confirm the move at 1.2x or higher.',
-    'Strong close': 'Price moved up and closed in the top 25% of the latest candle range.',
-    'Weak close': 'Price moved down and closed in the bottom 25% of the latest candle range.',
-    'Normal movement': 'None of the abnormal-move, momentum, strong-close, or weak-close conditions occurred.',
-    'No signal': 'There is not enough usable price data to calculate a signal.',
+    'Confirmed momentum': 'Price moved ≥1.8× its recent average AND volume is ≥1.2× above the 20-day average — both price action and participation confirm the move.',
+    'Abnormal move': 'Price moved ≥1.8× its recent average, but volume stayed normal — the move lacks participation confirmation.',
+    'Strong close': 'Price closed in the top 25% of today\'s range with a positive move — buyers controlled the close.',
+    'Weak close': 'Price closed in the bottom 25% of today\'s range with a negative move — sellers controlled the close.',
+    'Normal movement': 'No unusual price action or volume — movement is within normal bounds.',
+    'No signal': 'Not enough recent price data to compute a reliable signal.',
 };
 
 const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
@@ -1918,10 +1918,10 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                                     </span>
                                 </div>
                                 <div style={{ display: 'grid', gap: '0.55rem' }}>
-                                    <SignalMeter label="Move" value={s.current_move_pct} max={6} suffix="%" color={(s.current_move_pct ?? 0) >= 0 ? 'var(--brand-green)' : 'var(--brand-red)'} help="Latest close versus the previous candle close. For daily candles, this matches the usual market daily-change calculation and includes overnight gaps." />
-                                    <SignalMeter label="Candle range" value={s.current_range_pct} max={8} suffix="%" color="var(--brand-purple)" help="Latest candle high-low range as a percent of open. Larger values mean wider intraday or daily movement." />
-                                    <SignalMeter label="Volume ratio" value={s.volume_ratio} max={3} suffix="x" color="var(--brand-blue)" help="Latest candle volume divided by the recent average volume. Above 1.0 means volume is heavier than normal." />
-                                    <SignalMeter label="Close location" value={s.close_location_pct} max={100} suffix="%" color={(s.close_location_pct ?? 50) >= 50 ? 'var(--brand-green)' : 'var(--brand-red)'} help="Where the latest close sits inside the candle range. Near 100% closed near the high; near 0% closed near the low." />
+                                    <SignalMeter label="Move" value={s.current_move_pct} max={6} suffix="%" color={(s.current_move_pct ?? 0) >= 0 ? 'var(--brand-green)' : 'var(--brand-red)'} help="Percentage change from the previous close. Positive = up, negative = down. Includes overnight gaps for daily candles." />
+                                    <SignalMeter label="Candle range" value={s.current_range_pct} max={8} suffix="%" color="var(--brand-purple)" help="High minus low as a percentage of open — how much the price moved within this candle. Larger = more volatile." />
+                                    <SignalMeter label="Volume ratio" value={s.volume_ratio} max={3} suffix="x" color="var(--brand-blue)" help="Current candle volume ÷ 20-bar average volume. 1.0 = normal; >1.2 = unusually heavy; <0.8 = light." />
+                                    <SignalMeter label="Close location" value={s.close_location_pct} max={100} suffix="%" color={(s.close_location_pct ?? 50) >= 50 ? 'var(--brand-green)' : 'var(--brand-red)'} help="Where the close falls in the day's range: 100% = closed at the high, 0% = closed at the low, 50% = midpoint." />
                                 </div>
                                 <div style={{ marginTop: '0.7rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                                     <MetricCell label="Avg candle" value={s.avg_range_pct != null ? `${s.avg_range_pct}%` : '-'} help="Average high-low candle range over the recent sample." />

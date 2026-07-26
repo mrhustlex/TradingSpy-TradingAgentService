@@ -840,23 +840,42 @@ ASSISTANT_OUTPUTS = {
         "field": "enable_openai_compatible_output",
         "label": "OpenAI-compatible endpoint",
         "default": True,
+        "env": "ENABLE_OPENAI_COMPATIBLE_OUTPUT",
     },
     "acp": {
         "field": "enable_acp_agent_output",
         "label": "ACP Agent",
         "default": False,
+        "env": "ENABLE_ACP_AGENT_OUTPUT",
     },
     "a2a": {
         "field": "enable_a2a_remote_agent_output",
         "label": "A2A Remote Agent",
         "default": False,
+        "env": "ENABLE_A2A_REMOTE_AGENT_OUTPUT",
     },
 }
+
+def _env_bool(name: str) -> Optional[bool]:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 def _assistant_output_enabled(kind: str, settings: Optional[Dict[str, Any]] = None) -> bool:
     config = ASSISTANT_OUTPUTS[kind]
     data = settings or load_system_settings()
-    return bool(data.get(config["field"], config["default"]))
+    env_override = _env_bool(config["env"])
+    if env_override is not None:
+        return env_override
+    if config["field"] in data:
+        return bool(data.get(config["field"]))
+    return bool(config["default"])
 
 def _assistant_output_disabled_response(kind: str) -> JSONResponse:
     label = ASSISTANT_OUTPUTS[kind]["label"]
@@ -4779,7 +4798,66 @@ def _a2a_message_text(body: Dict[str, Any]) -> str:
         if isinstance(last, dict):
             return str(last.get("content") or last.get("text") or "")
         return str(last)
+    task = body.get("task")
+    if isinstance(task, dict):
+        return _a2a_message_text(task)
     return ""
+
+_A2A_SKILLS = [
+    {
+        "id": "assistant",
+        "name": "Trading Assistant",
+        "description": "Route a request through the default intent router used by the web UI runtime.",
+    },
+    {
+        "id": "market-review",
+        "name": "Market Review",
+        "description": "Generate market intelligence summaries and daily market review responses.",
+    },
+    {
+        "id": "strategy-create",
+        "name": "Strategy Create",
+        "description": "Generate one or more candidate Backtrader strategies from a prompt.",
+    },
+    {
+        "id": "strategy-race",
+        "name": "Strategy Race",
+        "description": "Iterate strategy generation + backtesting until a benchmark is beaten.",
+    },
+    {
+        "id": "fundamental-screener",
+        "name": "Fundamental Screener",
+        "description": "Screen a universe of stocks for valuation/growth/profitability candidates.",
+    },
+]
+
+_A2A_WORKFLOW_BY_SKILL = {
+    "market-review": "market_review",
+    "strategy-create": "strategy_create",
+    "strategy-race": "strategy_race",
+    "fundamental-screener": "fundamental_screener",
+}
+
+def _a2a_skill_id(body: Dict[str, Any]) -> Optional[str]:
+    for key in ("skill", "skill_id", "capability"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("skill", "skill_id", "capability"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    task = body.get("task")
+    if isinstance(task, dict):
+        return _a2a_skill_id(task)
+    return None
+
+def _a2a_skill_workflow(skill_id: Optional[str]) -> Optional[str]:
+    if not skill_id or skill_id == "assistant":
+        return None
+    return _A2A_WORKFLOW_BY_SKILL.get(skill_id)
 
 def _a2a_task_payload(run_id: str) -> Dict[str, Any]:
     run = agent_runs.get(run_id) or agent_runs_table.get(Query().run_id == run_id) or {}
@@ -4810,13 +4888,7 @@ async def a2a_agent_card():
         },
         "defaultInputModes": ["text/plain", "application/json"],
         "defaultOutputModes": ["application/json", "text/plain"],
-        "skills": [
-            {
-                "id": "assistant",
-                "name": "Trading Assistant",
-                "description": "Routes user requests to the same strategy and market agent runtime used by the web UI.",
-            }
-        ],
+        "skills": _A2A_SKILLS,
     }
 
 @app.get("/a2a/agent-card.json")
@@ -4829,8 +4901,14 @@ async def a2a_tasks_send(background_tasks: BackgroundTasks, body: Dict[str, Any]
     if not text:
         raise HTTPException(status_code=400, detail="A2A task requires a text message or input")
 
+    skill_id = _a2a_skill_id(body)
+    skill_workflow = _a2a_skill_workflow(skill_id)
+    if skill_id and skill_id != "assistant" and skill_workflow is None:
+        allowed = ", ".join(skill["id"] for skill in _A2A_SKILLS)
+        raise HTTPException(status_code=400, detail=f"Unknown skill '{skill_id}'. Allowed skills: {allowed}")
+
     intent = _fallback_agent_intent(text)
-    workflow = body.get("workflow") or intent.get("workflow") or "market_review"
+    workflow = body.get("workflow") or skill_workflow or intent.get("workflow") or "market_review"
     ticker = (body.get("ticker") or _extract_ticker_from_text(text) or "").upper() or None
     request = normalize_agent_run_request(AgentRunRequest(
         workflow=workflow,
@@ -7547,6 +7625,9 @@ async def get_settings():
     visible["default_model"] = raw_model or normalize_model(visible["default_provider"], env_model)
     visible["litellm_base_url"] = visible.get("litellm_base_url") or os.getenv("LITELLM_BASE_URL") or "http://localhost:4000/v1"
     visible["ollama_base_url"] = visible.get("ollama_base_url") or os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434/v1"
+    visible["enable_openai_compatible_output"] = _assistant_output_enabled("openai", data)
+    visible["enable_acp_agent_output"] = _assistant_output_enabled("acp", data)
+    visible["enable_a2a_remote_agent_output"] = _assistant_output_enabled("a2a", data)
     visible["remote_agent_auth_token_configured"] = bool(_remote_agent_token(data))
     for key in KEY_FIELDS:
         env_key = key.upper()
