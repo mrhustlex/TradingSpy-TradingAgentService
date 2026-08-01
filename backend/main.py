@@ -3797,6 +3797,7 @@ async def agent_run_task(run_id: str, request: AgentRunRequest):
             _update_agent_run(run_id, progress=90, current_step="Generating market review summary")
             await _flush_agent_updates()
             try:
+                from langchain_core.messages import SystemMessage, HumanMessage
                 provider = request.provider or "openai"
                 model = request.model or "gpt-4o-mini"
                 api_key = request.api_key or ""
