@@ -1576,11 +1576,11 @@ def read_candles(
 
 @tool
 def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = True, include_insiders: bool = False) -> dict:
-    """Collect a deep stock research packet for a ticker.
+    """Collect a deep stock research packet for a ticker including extended-hours (after-hours/pre-market) context.
 
     Use this for broad stock analysis questions such as "is X a good stock",
-    "what is the bull/bear case", "what products are driving growth", or
-    "analyze X using news, fundamentals, and catalysts".
+    "what is the bull/bear case", "what products are driving growth",
+    "analyze X using news, fundamentals, and catalysts", or post-earnings analysis.
 
     Args:
         ticker: Stock symbol e.g. NVDA, CRWD, AAPL
@@ -1594,6 +1594,59 @@ def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = Tr
 
     quote = _get_quote_cached(symbol)
     technicals = _get_technicals_cached(symbol)
+
+    extended = {}
+    try:
+        t = yf.Ticker(symbol)
+        intra = t.history(period="2d", interval="5m", prepost=True)
+        if intra is not None and not intra.empty:
+            intra = intra.dropna(subset=["Close"])
+            if not intra.empty:
+                regular_mask = (intra.index.time >= pd.Timestamp("09:30").time()) & (intra.index.time <= pd.Timestamp("16:00").time())
+                after_hours_mask = intra.index.time >= pd.Timestamp("16:00").time()
+                pre_mask = intra.index.time <= pd.Timestamp("09:30").time()
+
+                last_reg_close = None
+                last_reg_idx = None
+                reg = intra[regular_mask]
+                if not reg.empty:
+                    last_reg = reg.iloc[-1]
+                    last_reg_close = round(float(last_reg["Close"]), 2) if pd.notna(last_reg.get("Close")) else None
+                    last_reg_idx = str(last_reg.name)
+
+                latest = intra.iloc[-1]
+                latest_close = round(float(latest["Close"]), 2) if pd.notna(latest.get("Close")) else None
+                latest_time = str(latest.name)
+
+                ah = intra[after_hours_mask]
+                last_ah_close = round(float(ah.iloc[-1]["Close"]), 2) if not ah.empty and pd.notna(ah.iloc[-1].get("Close")) else None
+                ah_change = round(last_ah_close - last_reg_close, 2) if last_ah_close and last_reg_close else None
+                ah_change_pct = round((last_ah_close - last_reg_close) / last_reg_close * 100, 2) if last_ah_close and last_reg_close else None
+
+                pm = intra[pre_mask]
+                first_pm_open = round(float(pm.iloc[0]["Open"]), 2) if not pm.empty and pd.notna(pm.iloc[0].get("Open")) else None
+                last_pm = None
+                if not pm.empty:
+                    last_pm_row = pm.iloc[-1]
+                    last_pm = round(float(last_pm_row["Close"]), 2) if pd.notna(last_pm_row.get("Close")) else None
+                pm_change_from_prev_close = round(last_pm - last_reg_close, 2) if last_pm and last_reg_close else None
+                pm_change_pct = round((last_pm - last_reg_close) / last_reg_close * 100, 2) if last_pm and last_reg_close else None
+
+                extended = {
+                    "latest_price": latest_close,
+                    "latest_time": latest_time,
+                    "last_regular_close": last_reg_close,
+                    "last_regular_bar": last_reg_idx,
+                    "after_hours_price": last_ah_close,
+                    "after_hours_change": ah_change,
+                    "after_hours_change_pct": ah_change_pct,
+                    "pre_market_open": first_pm_open,
+                    "pre_market_last": last_pm,
+                    "pre_market_change_from_prev_close": pm_change_from_prev_close,
+                    "pre_market_change_pct": pm_change_pct,
+                }
+    except Exception as exc:
+        extended = {"error": str(exc)[:200]}
     info = _get_ticker_info_cached(symbol)
     fundamentals = _get_fundamentals_cached(symbol)
     insiders = get_insider_trades.invoke({"tickers": [symbol], "limit": 20, "days_back": 365}) if include_insiders else None
@@ -1648,6 +1701,7 @@ def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = Tr
         "as_of": datetime.now().isoformat(),
         "quote": quote,
         "technicals": technicals,
+        "extended_hours": extended,
         "company": info,
         "fundamentals": fundamentals,
         **({"insider_trades": insiders} if insiders is not None else {}),
@@ -1926,6 +1980,108 @@ def calculate_rsi(prices, period=14):
     return pd.Series([None] * (period) + rsis[1:], index=prices.index)
 
 
+@tool
+def get_financial_statements(ticker: str) -> dict:
+    """Get annual and quarterly income statements, balance sheets, cash flow statements, recent news headlines, and upcoming earnings dates for a ticker — all in one call. Includes revenue, net income, EPS, assets, liabilities, operating cash flow, free cash flow.
+    Args:
+        ticker: Stock symbol e.g. AAPL, NVDA, TSLA
+    """
+    return _get_financial_statements_cached(ticker.upper())
+
+@cached_call("financial_statements", ttl_seconds=3600)
+def _get_financial_statements_cached(ticker: str) -> dict:
+    for attempt in range(3):
+        try:
+            t = yf.Ticker(ticker)
+            fetched_at = datetime.now().isoformat()
+
+            def _df_to_dict(df, max_periods=4):
+                if df is None or df.empty:
+                    return None
+                result = {}
+                cols = df.columns[:max_periods]
+                for col in cols:
+                    label = str(col.date()) if hasattr(col, 'date') else str(col)
+                    result[label] = {}
+                    for idx in df.index:
+                        val = df.loc[idx, col]
+                        if pd.notna(val):
+                            try:
+                                result[label][str(idx)] = round(float(val), 2)
+                            except (ValueError, TypeError):
+                                result[label][str(idx)] = str(val)
+                return result
+
+            income_annual = _df_to_dict(t.income_stmt)
+            income_quarterly = _df_to_dict(t.quarterly_income_stmt)
+            balance_annual = _df_to_dict(t.balance_sheet)
+            balance_quarterly = _df_to_dict(t.quarterly_balance_sheet)
+            cashflow_annual = _df_to_dict(t.cashflow)
+            cashflow_quarterly = _df_to_dict(t.quarterly_cashflow)
+
+            earnings_dates = None
+            try:
+                ed = t.earnings_dates
+                if ed is not None and not ed.empty:
+                    earnings_dates = {}
+                    for idx, row in ed.head(5).iterrows():
+                            label = str(idx.date()) if hasattr(idx, 'date') else str(idx)
+                            earnings_dates[label] = {}
+                            for col in ed.columns:
+                                val = row.get(col)
+                                if pd.notna(val):
+                                    try:
+                                        earnings_dates[label][str(col)] = round(float(val), 2)
+                                    except (ValueError, TypeError):
+                                        earnings_dates[label][str(col)] = str(val)
+            except Exception:
+                pass
+
+            next_earnings = None
+            try:
+                cal = t.calendar
+                if cal is not None:
+                    next_earnings = {}
+                    for k, v in cal.items():
+                        k_str = str(k)
+                        if hasattr(v, 'isoformat'):
+                            next_earnings[k_str] = v.isoformat()
+                        elif isinstance(v, (int, float)):
+                            next_earnings[k_str] = v
+                        else:
+                            next_earnings[k_str] = str(v)
+            except Exception:
+                pass
+
+            news = {}
+            try:
+                news_items = market_intel.get_ticker_news(ticker, 8)
+                news = {"items": news_items, "count": len(news_items or [])}
+            except Exception as e:
+                news = {"error": str(e)[:200]}
+
+            return {
+                "symbol": ticker,
+                "fetched_at": fetched_at,
+                "income_statement_annual": income_annual,
+                "income_statement_quarterly": income_quarterly,
+                "balance_sheet_annual": balance_annual,
+                "balance_sheet_quarterly": balance_quarterly,
+                "cash_flow_annual": cashflow_annual,
+                "cash_flow_quarterly": cashflow_quarterly,
+                "earnings_dates": earnings_dates,
+                "next_earnings": next_earnings,
+                "news": news,
+                "note": "Financial statement line items vary by ticker. Common income items: Total Revenue, Gross Profit, Operating Income, Net Income, Diluted EPS. Common balance sheet items: Total Assets, Total Liabilities, Total Equity, Cash, Long Term Debt. Common cash flow items: Operating Cash Flow, Investing Cash Flow, Financing Cash Flow, Free Cash Flow.",
+            }
+        except Exception as e:
+            if attempt < 2:
+                logger.warning(f"get_financial_statements attempt {attempt+1} failed, retrying...")
+                time.sleep(2)
+            else:
+                logger.error(f"get_financial_statements failed: {e}")
+                return {"symbol": ticker, "error": "Financial statement data unavailable", "fetched_at": datetime.now().isoformat()}
+
 # Export all tools
 ALL_TOOLS = [
     get_quote,
@@ -1939,6 +2095,7 @@ ALL_TOOLS = [
     get_sector_heatmap,
     get_industry_heatmap,
     get_earnings_dates,
+    get_financial_statements,
     get_dividends,
     get_options_chain,
     get_chart_data,
@@ -2000,10 +2157,21 @@ Your training data has a cutoff date. You CANNOT rely on it for:
 🚨🚨🚨 TICKER/SYMBOL RECOGNITION RULE 🚨🚨🚨
 When the user mentions something that looks like it could be a ticker or stock symbol (e.g. "ticker:XXX", "symbol:XXX", "$XXX", or a short uppercase word like "DRAM", "PLTR", "CRWD"), try calling get_stock_deep_dive with that symbol first. If the tool returns valid data, you found the ticker. If the tool errors or returns no data, use web_search to figure out what the user meant (e.g. "DRAM stock ticker" or "what company is DRAM"). Always try the tool before asking the user to clarify — it's faster and most short uppercase words are tickers.
 
+🚨🚨🚨 SYMBOL DISAMBIGUATION GUARD (CRITICAL) 🚨🚨🚨
+- If the user gives an exact symbol (e.g., "SPCX", "$SPCX"), treat that exact symbol as the primary intent.
+- Validate the exact symbol first with get_quote or get_stock_deep_dive.
+- If the symbol lookup returns valid market data, DO NOT reinterpret it as a similarly named private company.
+- Never collapse tickers into name-based assumptions (e.g., SPCX ≠ SpaceX unless the tool data explicitly says so).
+- Use web_search only to add context after symbol validation, or to resolve ambiguity when symbol validation fails.
+
 **BEFORE answering ANY time-sensitive question, you MUST:**
 1. Call web_search with a specific query (e.g., "SpaceX IPO status 2026", "Is Tesla still public 2026")
 2. Base your answer ONLY on the web_search results
 3. If web_search fails, clearly state: "I cannot verify current information - my data may be outdated"
+
+IMPORTANT EXCEPTION:
+- If the user asks about an explicit ticker symbol, first validate that symbol with market-data tools.
+- Do not let web_search about a similarly named company override a valid ticker lookup result.
 
 **VIOLATION = GIVING WRONG INFORMATION.** Users trust you for current data. NEVER guess.
 🚨🚨🚨 END MANDATORY WEB SEARCH RULE 🚨🚨🚨
@@ -2070,7 +2238,7 @@ When the user mentions something that looks like it could be a ticker or stock s
 - Example: If you just analyzed MSFT and user asks "should I buy?":
   - ✅ RIGHT: Use the fundamentals, technicals, trend you just fetched → Give buy/wait/pass opinion
   - ❌ WRONG: Call screen_industry_insider_activity or other irrelevant tools
-- **IMPORTANT: "Should I buy SpaceX?" → MUST web_search first (IPO status is time-sensitive!)**
+- **IMPORTANT: If the user asked by exact ticker (e.g., "SPCX"), validate that ticker first and keep symbol identity strict.**
 
 🧠 REACT REASONING STYLE:
 When analyzing requests, think through your approach explicitly:
@@ -2136,6 +2304,8 @@ Tool Priority Guide:
 - Deep stock analysis / bull-bear case / product growth / catalysts → Use get_stock_deep_dive (insiders off by default)
 - Find undervalued stocks / fundamental screen → Use screen_undervalued_stocks
 - Technical analysis → Use get_technicals (1 tool, includes price)
+- Financial statements / income / balance sheet / cash flow / 財報 question → Use get_financial_statements (1 tool, includes earnings dates and extraction timestamp). Do NOT use get_stock_deep_dive for financial statements.
+- Post-earnings price drop / after-hours move / "財報後跌" question → Use get_stock_deep_dive (includes extended_hours with after-hours and pre-market price changes)
 - Earnings question → Use get_earnings_dates (1 tool)
 - Dividend question → Use get_dividends (1 tool)
 
@@ -2150,6 +2320,7 @@ Available tools:
 - get_stock_deep_dive: Comprehensive evidence packet for a stock: quote, technicals, fundamentals, company info, news, web research on product/growth/catalysts/risks, and sector context. Pass include_insiders=True only when user explicitly asks about insider activity.
 - screen_undervalued_stocks: Iterative fundamental value screener over presets or custom tickers; returns passing candidates, scores, reasons, cautions, rejected sample, and continuation hint
 - get_market_overview: Get global market overview - US, European, Asian indices, commodities, crypto
+- get_financial_statements: Get annual and quarterly income statements, balance sheets, cash flow statements, recent news headlines, and upcoming earnings dates with extraction timestamp
 - get_earnings_dates: Get upcoming earnings dates and historical earnings
 - get_dividends: Get dividend history and yield
 - get_price_chart: Get historical OHLCV data for charting and visualization

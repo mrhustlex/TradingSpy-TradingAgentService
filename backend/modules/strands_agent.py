@@ -216,7 +216,11 @@ class StrandsAgentLoop:
                         if tr["error"]:
                             tool_summary += f"\n{tr['tool_name']}: ERROR - {tr['error']}"
                         else:
-                            tool_summary += f"\n{tr['tool_name']}: {json.dumps(tr['result'], indent=2)[:300]}"
+                            try:
+                                serialized = json.dumps(tr['result'], indent=2, default=str)[:300]
+                            except Exception:
+                                serialized = str(tr['result'])[:300]
+                            tool_summary += f"\n{tr['tool_name']}: {serialized}"
                     
                     conversation_history.append(HumanMessage(content=tool_summary))
                     

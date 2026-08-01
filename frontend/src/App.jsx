@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Suspense, lazy } from 'react';
 import axios from 'axios';
 import {
   Database,
@@ -45,6 +45,9 @@ import InsiderTrades from './components/InsiderTrades';
 // Lazy load ChartViewer to prevent lightweight-charts bundling issues
 const ChartViewer = lazy(() => import('./components/ChartViewer'));
 import Settings from './components/Settings';
+
+// Mobile app - lazy loaded
+const MobileApp = lazy(() => import("./mobile/MobileApp"));
 import { API_BASE, DATA_SERVICE, BACKTEST_SERVICE, SETTINGS_URL } from './config';
 
 const AGENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'stopped', 'stale']);
@@ -926,4 +929,19 @@ const App = () => {
   );
 };
 
-export default App;
+export default function AppRoot() {
+  const isMobile = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return window.innerWidth < 768 || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  }, []);
+
+  if (isMobile) {
+    return (
+      <Suspense fallback={<div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "var(--bg-dark)" }}><div className="spinner" /></div>}>
+        <MobileApp />
+      </Suspense>
+    );
+  }
+
+  return <App />;
+}

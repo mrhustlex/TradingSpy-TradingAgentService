@@ -2,6 +2,9 @@ services:
 
   backend:
     image: tradingspy-backend:latest
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./backend
       cache_from:
@@ -42,6 +45,9 @@ services:
 
   frontend:
     image: tradingspy-frontend:latest
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     build:
       context: ./frontend
       args:
@@ -59,6 +65,9 @@ services:
 
   searxng:
     image: searxng/searxng:latest
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
     ports:
       - "0.0.0.0:${SEARXNG_PORT:-8080}:8080"

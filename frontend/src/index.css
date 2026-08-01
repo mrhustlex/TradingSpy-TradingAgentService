@@ -1,3 +1,4 @@
+@import "./mobile/mobile.css";
 :root {
   /* Default Dark Mode Theme */
   --bg-dark: #0a0a0c;
@@ -594,7 +595,6 @@ body {
   height: auto;
 }
 
-/* ========================================
    Trading Terminal Layout
    ======================================== */
 .terminal-layout {
@@ -809,7 +809,6 @@ body {
   z-index: 9999;
 }
 
-/* ========================================
    Premium Login Page
    ======================================== */
 .login-screen {
@@ -1003,7 +1002,6 @@ body {
   -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, black 40%, transparent 100%);
 }
 
-/* ========================================
    Loading Screen
    ======================================== */
 .loading-screen {
@@ -1084,7 +1082,6 @@ body {
   width: 80px;
 }
 
-/* ========================================
    User Profile (Sidebar)
    ======================================== */
 .user-profile {
@@ -1133,7 +1130,6 @@ body {
   text-overflow: ellipsis;
 }
 
-/* ========================================
    Stats Grid (used in sidebar & details)
    ======================================== */
 .stats-grid {
@@ -1167,28 +1163,4 @@ body {
 
 .stat-value.negative {
   color: var(--brand-red);
-}
-
-@media (max-width: 1023px) {
-  #mobile-menu-btn {
-    display: flex !important;
-  }
-
-  #sidebar-overlay {
-    display: block !important;
-  }
-}
-
-
-/* ========================================
-   Mobile Responsive
-   ======================================== */
-@media (max-width: 1023px) {
-  #mobile-menu-btn {
-    display: flex !important;
-  }
-
-  #sidebar-overlay {
-    display: block !important;
-  }
 }

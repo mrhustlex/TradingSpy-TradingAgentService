@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo, Suspense, lazy } from 'react';
 import axios from 'axios';
 import { toPng } from 'html-to-image';
-import { Send, Bot, User, Wand2, Play, Database, RefreshCw, Copy, Check, Trash2, MessageSquare, X, StopCircle, Plus, Edit2, Square, Share, Download, FileText, Printer, Eye, EyeOff } from 'lucide-react';
+import { Send, Bot, User, Wand2, Play, Database, RefreshCw, Copy, Check, Trash2, MessageSquare, X, StopCircle, Plus, Edit2, Square, Share, Download, FileText, Printer, Eye, EyeOff, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE, BACKTEST_SERVICE, DATA_SERVICE, OPTIMIZER_SERVICE, SETTINGS_URL, INTELLIGENCE_SERVICE } from '../config';
 import { formatDatasetName } from '../utils/formatters';
 import { getApiSettings } from '../utils/apiKeyHelper';
+import { normalizeAssistantResponseText } from '../utils/assistantResponse';
+import AgentTrace from './AgentTrace';
 
 // Lazy load ChartViewer to prevent lightweight-charts bundling issues
 const ChartViewer = lazy(() => import('./ChartViewer'));
@@ -325,7 +327,26 @@ const ExpectedPatternCard = React.memo(function ExpectedPatternCard({ data }) {
                 </div>
                 <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
                     {['calculation', 'llm', 'hybrid'].map(value => <button key={value} className={`btn btn-xs ${mode === value ? 'btn-primary' : 'btn-ghost'}`} disabled={recalculating} onClick={() => { const nextHorizon = Math.min(horizon, value === 'calculation' ? 500 : 250); setMode(value); setHorizon(nextHorizon); recalculate(value, interval, nextHorizon); }}>{value === 'llm' ? 'LLM' : value[0].toUpperCase() + value.slice(1)}</button>)}
-                    <select className="input" value={interval} onChange={event => { setInterval(event.target.value); setAgentUpdate(''); }} style={{ width: 'auto', padding: '0.22rem 0.35rem', fontSize: '0.68rem' }} title="Forecast candle interval">{assistantIntervals.map(value => <option key={value} value={value}>{value}</option>)}</select>
+                    <select
+                        className="input"
+                        value={interval}
+                        onChange={event => {
+                            const nextInterval = event.target.value;
+                            const nextHorizon = horizonMode === 'timestamp' && targetTime
+                                ? Math.min(horizonLimit, estimatePatternBarsUntil(targetTime, nextInterval))
+                                : horizonMode === 'time' && timeRange
+                                    ? Math.min(horizonLimit, estimateBarsForTimeRange(timeRange, nextInterval))
+                                    : horizon;
+                            setInterval(nextInterval);
+                            setHorizon(nextHorizon);
+                            setAgentUpdate('');
+                            recalculate(mode, nextInterval, nextHorizon);
+                        }}
+                        style={{ width: 'auto', padding: '0.22rem 0.35rem', fontSize: '0.68rem' }}
+                        title="Forecast candle interval"
+                    >
+                        {assistantIntervals.map(value => <option key={value} value={value}>{value}</option>)}
+                    </select>
                     <select 
                         className="input" 
                         value={horizonMode === 'time' ? timeRange : 'custom'} 
@@ -469,7 +490,17 @@ function loadThreads() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return null;
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        const list = Array.isArray(parsed) ? parsed : (parsed.threads || []);
+        const threads = list.map(t => ({
+            ...t,
+            messages: (t.messages || []).map(m => ({
+                ...m,
+                type: m.type || (m.role === 'user' ? 'user' : 'bot'),
+                reasoning: m.reasoning ?? m.thinking ?? '',
+            })),
+        }));
+        return { activeId: (parsed && parsed.activeId) || threads[0]?.id || null, threads };
     } catch { return null; }
 }
 
@@ -528,6 +559,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const [thinkingDetail, setThinkingDetail] = useState(localStorage.getItem('thinking_detail') || 'normal');
     const [showLiveThinking, setShowLiveThinking] = useState(localStorage.getItem('show_live_thinking') !== 'false');
     const [agentInstructions, setAgentInstructions] = useState(localStorage.getItem('agent_instructions') || '');
+    const [agentMode, setAgentMode] = useState(localStorage.getItem('assistant_agent_mode') !== 'false');
     const [useAgentBattleParams, setUseAgentBattleParams] = useState(localStorage.getItem('agent_use_battle_params') === 'true');
     const [agentStakeRange, setAgentStakeRange] = useState(localStorage.getItem('agent_stake_range') || '10, 50, 95');
     const [agentTrailRange, setAgentTrailRange] = useState(localStorage.getItem('agent_trail_range') || '0.0, 0.05, 0.15');
@@ -563,8 +595,6 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const [inputHistoryIndex, setInputHistoryIndex] = useState(null);
     const [inputHistoryDraft, setInputHistoryDraft] = useState('');
     const [copiedId, setCopiedId] = useState(null);
-    const [expandedReasoning, setExpandedReasoning] = useState({}); // msgId -> bool (true = expanded)
-    const [expandedSteps, setExpandedSteps] = useState({}); // msgId -> bool (true = expanded)
     const [replyThreadId, setReplyThreadId] = useState(null); // msgId of message being replied to
     const [replyInput, setReplyInput] = useState(''); // input for reply thread
     const [shareModalOpen, setShareModalOpen] = useState(false);
@@ -1977,7 +2007,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 return;
             }
 
-            const endpoint = `${BACKTEST_SERVICE}/ai/chat-with-tools`;
+            const endpoint = `${BACKTEST_SERVICE}/ai/${agentMode ? 'chat-strands' : 'chat-with-tools'}`;
 
             const thread = threadState.threads.find(t => t.id === threadId);
             const agentHistory = recentAgentContextMessages(thread, 4);
@@ -2043,8 +2073,10 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                         const data = JSON.parse(line.slice(6));
                             
                             if (data.type === 'status') {
-                                const statusText = data.content || 'Backend is working...';
-                                updateMessage(threadId, msgId, responseText || statusText, null, thinking || null, steps, null, null);
+                                if (data.content && !thinking.includes(data.content)) {
+                                    thinking = thinking ? `${thinking}\n${data.content}` : data.content;
+                                }
+                                updateMessage(threadId, msgId, responseText || '', null, thinking, steps, null, null);
                             } else if (data.type === 'thinking') {
                                 if (data.content && !thinking.includes(data.content)) {
                                     thinking = thinking ? `${thinking}\n${data.content}` : data.content;
@@ -2086,7 +2118,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 console.log('📊 toolData set to:', toolData);
                                 updateMessage(threadId, msgId, responseText || '', null, thinking || null, steps, toolData, null);
                             } else if (data.type === 'response') {
-                                responseText = data.content;
+                                const normalized = normalizeAssistantResponseText(data.content);
+                                responseText = normalized || responseText;
                                 updateMessage(threadId, msgId, responseText, null, thinking || null, steps, Array.isArray(toolData) && toolData.length ? toolData : null, null);
                             } else if (data.type === 'task_started') {
                                 // Register task in Task Center
@@ -2099,7 +2132,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                             } else if (data.type === 'result') {
                                 // Final result payload from agent
                                 const payload = data.payload || {};
-                                responseText = payload.response || responseText;
+                                const normalized = normalizeAssistantResponseText(payload.response);
+                                responseText = normalized || responseText;
                                 if (payload.reasoning && !thinking.includes(payload.reasoning)) {
                                     thinking = thinking ? `${thinking}\n${payload.reasoning}` : payload.reasoning;
                                 }
@@ -3251,179 +3285,6 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         return elements;
     };
 
-    const getStepTone = (status) => {
-        if (status === 'success') return { color: 'var(--brand-green)', background: 'rgba(34,197,94,0.08)', border: 'rgba(34,197,94,0.22)', label: 'Done' };
-        if (status === 'error') return { color: 'var(--brand-red)', background: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.24)', label: 'Error' };
-        if (status === 'running') return { color: 'var(--brand-blue)', background: 'rgba(59,130,246,0.08)', border: 'rgba(59,130,246,0.24)', label: 'Running' };
-        return { color: 'rgba(255,255,255,0.55)', background: 'rgba(255,255,255,0.05)', border: 'rgba(255,255,255,0.12)', label: 'Queued' };
-    };
-
-    const compactTraceSteps = (steps = []) => {
-        const visibleSteps = steps.filter(s => s.status !== 'info');
-        const compacted = [];
-        let pollCount = 0;
-        for (const step of visibleSteps) {
-            if (step.label?.includes('check_task_status')) {
-                pollCount += 1;
-                continue;
-            }
-            if (pollCount > 0) {
-                compacted.push({ label: `Polled task status ${pollCount} times`, status: 'success', _poll: true });
-                pollCount = 0;
-            }
-            compacted.push(step);
-        }
-        if (pollCount > 0) compacted.push({ label: `Polled task status ${pollCount} times`, status: 'success', _poll: true });
-        return compacted;
-    };
-
-    const renderReactTrace = (msg) => {
-        const isRunning = msg.id === currentStreamingId;
-        const isExpanded = isRunning ? true : Boolean(expandedSteps[msg.id]);
-        const showAll = Boolean(expandedReasoning[msg.id + '_all']);
-        const compacted = compactTraceSteps(msg.steps || []);
-        const commentary = (msg.commentary || []).map(line => ({ _commentary: true, line }));
-        const traceItems = [...compacted, ...commentary];
-        const hasReasoning = Boolean(msg.reasoning);
-        const PREVIEW = isRunning ? 8 : 5;
-        const displayItems = showAll ? traceItems : traceItems.slice(-PREVIEW);
-        const successCount = compacted.filter(s => s.status === 'success').length;
-        const runningCount = compacted.filter(s => s.status === 'running').length;
-        const errorCount = compacted.filter(s => s.status === 'error').length;
-        const summary = [
-            `${compacted.length} actions`,
-            successCount ? `${successCount} done` : null,
-            runningCount ? `${runningCount} running` : null,
-            errorCount ? `${errorCount} errors` : null,
-            hasReasoning ? 'thoughts' : null,
-        ].filter(Boolean).join(' · ');
-        const latestStep = [...traceItems].reverse().find(item => item.label || item.line);
-        const preview = latestStep?._commentary ? latestStep.line : latestStep?.label;
-        const renderToolJson = (value) => {
-            try {
-                return JSON.stringify(value, null, 2);
-            } catch {
-                return String(value);
-            }
-        };
-
-        return (
-            <div style={{ marginBottom: '0.55rem' }}>
-                <button
-                    onClick={() => setExpandedSteps(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
-                    style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.42rem 0.1rem', background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', textAlign: 'left' }}
-                >
-                    <div style={{ width: 22, height: 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: isRunning ? 'rgba(59,130,246,0.14)' : 'rgba(255,255,255,0.06)', color: isRunning ? 'var(--brand-blue)' : 'rgba(255,255,255,0.58)', flexShrink: 0 }}>
-                        {isRunning ? <RefreshCw className="animate-spin" size={14} /> : <Check size={14} />}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <span style={{ fontSize: '0.78rem', fontWeight: 750, color: 'rgba(255,255,255,0.78)' }}>{isRunning ? 'Thinking...' : 'Thought process'}</span>
-                            {summary && <span style={{ fontSize: '0.66rem', opacity: 0.42 }}>{summary}</span>}
-                        </div>
-                        <div style={{ fontSize: '0.7rem', opacity: 0.48, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {preview || (isRunning ? 'Deciding whether tools are needed...' : 'Click to inspect the tool path')}
-                        </div>
-                    </div>
-                    <span style={{ fontSize: '0.68rem', opacity: 0.42 }}>{isExpanded ? 'Hide' : 'Show'}</span>
-                </button>
-                <AnimatePresence>
-                    {isExpanded && (
-                        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }}>
-                            <div style={{ marginTop: '0.15rem', marginLeft: '0.7rem', padding: '0.7rem 0 0.3rem 1rem', borderLeft: '1px solid rgba(148,163,184,0.18)' }}>
-                                {hasReasoning && (
-                                    <div style={{ marginBottom: traceItems.length ? '0.75rem' : 0 }}>
-                                        <div style={{ fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.42, marginBottom: '0.35rem' }}>Thought</div>
-                                        <div style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', padding: '0.6rem 0.7rem', color: 'rgba(255,255,255,0.72)', fontSize: '0.8rem', lineHeight: 1.55, whiteSpace: 'pre-wrap', maxHeight: isRunning ? '160px' : '220px', overflowY: 'auto' }}>
-                                            {msg.reasoning}
-                                            {isRunning && <span style={{ opacity: 0.55 }}> |</span>}
-                                        </div>
-                                    </div>
-                                )}
-                                {traceItems.length > 0 && (
-                                    <div>
-                                        <div style={{ fontSize: '0.66rem', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.42, marginBottom: '0.45rem' }}>Tools</div>
-                                        {traceItems.length > PREVIEW && !showAll && (
-                                            <button onClick={() => setExpandedReasoning(prev => ({ ...prev, [msg.id + '_all']: true }))}
-                                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.46)', fontSize: '0.72rem', textAlign: 'left', padding: '0 0 0.45rem 0' }}>
-                                                Show {traceItems.length - PREVIEW} earlier events
-                                            </button>
-                                        )}
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
-                                            {displayItems.map((item, i) => {
-                                                if (item._commentary) {
-                                                    return (
-                                                        <div key={`commentary-${i}`} style={{ display: 'flex', gap: '0.55rem', color: 'rgba(255,255,255,0.58)', fontSize: '0.78rem', lineHeight: 1.5 }}>
-                                                            <span style={{ opacity: 0.35, flexShrink: 0 }}>note</span>
-                                                            <span>{item.line}</span>
-                                                        </div>
-                                                    );
-                                                }
-                                                const tone = getStepTone(item.status);
-                                                const toolDetailsKey = `${msg.id}_tool_${item._tool_key || item.tool || i}`;
-                                                const hasToolDetails = Boolean(item.tool_args || item.tool_result || item.tool_error);
-                                                const showToolDetails = Boolean(expandedReasoning[toolDetailsKey]);
-                                                return (
-                                                    <div key={`step-${i}`} style={{ display: 'grid', gridTemplateColumns: '76px minmax(0, 1fr)', gap: '0.65rem', alignItems: 'start' }}>
-                                                        <span style={{ justifySelf: 'start', border: `1px solid ${tone.border}`, background: tone.background, color: tone.color, borderRadius: '999px', padding: '0.15rem 0.45rem', fontSize: '0.62rem', fontWeight: 800 }}>
-                                                            {item._poll ? 'Poll' : tone.label}
-                                                        </span>
-                                                        <div style={{ minWidth: 0 }}>
-                                                            <div style={{ color: item._poll ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.78)', fontSize: '0.78rem', fontWeight: item._poll ? 500 : 650, overflowWrap: 'anywhere' }}>
-                                                                {item.label || item.tool || 'Tool step'}
-                                                            </div>
-                                                            {item.note && <div style={{ marginTop: '0.18rem', opacity: 0.45, fontSize: '0.72rem', lineHeight: 1.45, overflowWrap: 'anywhere' }}>{String(item.note).slice(0, 180)}</div>}
-                                                            {hasToolDetails && (
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setExpandedReasoning(prev => ({ ...prev, [toolDetailsKey]: !prev[toolDetailsKey] }))}
-                                                                    style={{ marginTop: '0.28rem', background: 'transparent', border: 'none', color: 'var(--brand-blue)', cursor: 'pointer', fontSize: '0.68rem', padding: 0 }}
-                                                                >
-                                                                    {showToolDetails ? 'Hide full tool JSON' : 'Show full tool JSON'}
-                                                                </button>
-                                                            )}
-                                                            {hasToolDetails && showToolDetails && (
-                                                                <div style={{ marginTop: '0.45rem', display: 'grid', gap: '0.45rem' }}>
-                                                                    {item.tool_args && (
-                                                                        <div>
-                                                                            <div style={{ fontSize: '0.62rem', fontWeight: 800, opacity: 0.42, textTransform: 'uppercase', marginBottom: '0.25rem' }}>Input</div>
-                                                                            <pre style={{ margin: 0, maxHeight: 220, overflow: 'auto', padding: '0.55rem 0.65rem', borderRadius: 6, border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(15,23,42,0.42)', color: 'rgba(226,232,240,0.76)', fontSize: '0.66rem', lineHeight: 1.45, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{renderToolJson(item.tool_args)}</pre>
-                                                                        </div>
-                                                                    )}
-                                                                    {item.tool_result && (
-                                                                        <div>
-                                                                            <div style={{ fontSize: '0.62rem', fontWeight: 800, opacity: 0.42, textTransform: 'uppercase', marginBottom: '0.25rem' }}>Result</div>
-                                                                            <pre style={{ margin: 0, maxHeight: 420, overflow: 'auto', padding: '0.55rem 0.65rem', borderRadius: 6, border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(15,23,42,0.42)', color: 'rgba(226,232,240,0.76)', fontSize: '0.66rem', lineHeight: 1.45, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{renderToolJson(item.tool_result)}</pre>
-                                                                        </div>
-                                                                    )}
-                                                                    {item.tool_error && (
-                                                                        <div>
-                                                                            <div style={{ fontSize: '0.62rem', fontWeight: 800, opacity: 0.42, textTransform: 'uppercase', marginBottom: '0.25rem' }}>Error</div>
-                                                                            <pre style={{ margin: 0, maxHeight: 180, overflow: 'auto', padding: '0.55rem 0.65rem', borderRadius: 6, border: '1px solid rgba(239,68,68,0.22)', background: 'rgba(239,68,68,0.06)', color: 'rgba(254,202,202,0.85)', fontSize: '0.66rem', lineHeight: 1.45, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{String(item.tool_error)}</pre>
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                        {traceItems.length > PREVIEW && showAll && (
-                                            <button onClick={() => setExpandedReasoning(prev => ({ ...prev, [msg.id + '_all']: false }))}
-                                                style={{ marginTop: '0.5rem', background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(255,255,255,0.46)', fontSize: '0.72rem', textAlign: 'left', padding: 0 }}>
-                                                Show less
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </div>
-        );
-    };
 
     const AgentEventDetail = ({ event, muted = false }) => {
         if (!event) return null;
@@ -4402,7 +4263,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                             <MessageSquare size={18} /> {activeThread?.title}
                         </h2>
                         <p style={{ margin: 0, fontSize: '0.72rem', opacity: 0.5 }}>
-                            ReAct assistant · {historyLimit === 0 ? 'no history reused' : `reusing up to ${historyLimit} history messages`} · {effectiveHistoryCount ? `${Math.floor(effectiveHistoryCount / 2)} exchanges in context` : 'no context yet'} · est. tokens in {formatTokenCount(chatTokenUsage.input)} / out {formatTokenCount(chatTokenUsage.output)} / total {formatTokenCount(chatTokenUsage.total)}
+                            {agentMode ? 'Agent loop' : 'ReAct'} assistant · {historyLimit === 0 ? 'no history reused' : `reusing up to ${historyLimit} history messages`} · {effectiveHistoryCount ? `${Math.floor(effectiveHistoryCount / 2)} exchanges in context` : 'no context yet'} · est. tokens in {formatTokenCount(chatTokenUsage.input)} / out {formatTokenCount(chatTokenUsage.output)} / total {formatTokenCount(chatTokenUsage.total)}
                             {retryableFailedPrompt && !isAssistantBusy && (
                                 <button
                                     className="btn btn-ghost btn-xs"
@@ -4416,6 +4277,36 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                         </p>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.2rem', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '8px', padding: '0.2rem', background: 'rgba(255,255,255,0.04)' }}>
+                            <button
+                                type="button"
+                                onClick={() => { setAgentMode(false); localStorage.setItem('assistant_agent_mode', 'false'); }}
+                                title="Single-pass: pick tools once, then answer. Faster and cheaper."
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: '0.3rem',
+                                    padding: '0.35rem 0.55rem', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer',
+                                    border: 'none',
+                                    background: !agentMode ? 'rgba(59,130,246,0.25)' : 'transparent',
+                                    color: !agentMode ? 'var(--brand-blue)' : 'rgba(255,255,255,0.55)',
+                                }}
+                            >
+                                <Zap size={12} /> Quick
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setAgentMode(true); localStorage.setItem('assistant_agent_mode', 'true'); }}
+                                title="Agent loop: reason, act, observe, and repeat until the goal is done. Best for multi-step workflows like fundamental scanning."
+                                style={{
+                                    display: 'flex', alignItems: 'center', gap: '0.3rem',
+                                    padding: '0.35rem 0.55rem', borderRadius: '6px', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer',
+                                    border: 'none',
+                                    background: agentMode ? 'rgba(139,92,246,0.25)' : 'transparent',
+                                    color: agentMode ? 'rgb(192,132,252)' : 'rgba(255,255,255,0.55)',
+                                }}
+                            >
+                                <Bot size={12} /> Agent
+                            </button>
+                        </div>
                         <button
                             type="button"
                             onClick={() => setApiPanelOpen(true)}
@@ -4499,7 +4390,14 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                             ↳ Reply to message
                                         </div>
                                     )}
-                                    {liveTraceVisible && renderReactTrace(message)}
+                                    {liveTraceVisible && (
+                                        <AgentTrace
+                                            steps={message.steps || []}
+                                            reasoning={message.reasoning || ''}
+                                            commentary={message.commentary || []}
+                                            isRunning={message.id === currentStreamingId}
+                                        />
+                                    )}
 
                                     {/* message bubble — now always at the bottom */}
                                     <div id={`msg-bubble-${message.id}`} style={{

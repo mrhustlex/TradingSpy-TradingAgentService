@@ -8408,7 +8408,10 @@ async def get_batch_price_changes(tickers: List[str], period: str = "1d", interv
         "extended": extended,
         "source": "bulk yfinance price history without per-ticker metadata",
     })
-    _set_cache(cache_key, payload)
+    # Don't cache an empty/zero-priced result: one flaky yfinance stretch would otherwise
+    # poison the endpoint for the whole cache TTL and make data appear "not loaded".
+    if any(q.get("price") is not None for q in quotes):
+        _set_cache(cache_key, payload)
     return payload
 
 @app.get("/api/intelligence/high-volume-universe")
@@ -8799,6 +8802,8 @@ async def trading_signal(request: TradingSignalRequest):
             max_down = _safe_float(usable_returns.min())
             avg_up = _safe_float(up_moves.mean())
             avg_down = _safe_float(down_moves.mean())
+            max_move = max(abs(max_up or 0), abs(max_down or 0)) if (max_up is not None or max_down is not None) else None
+            up_times = int((usable_returns > 0).sum())
 
             if current_move is None:
                 label = "No signal"
@@ -8823,6 +8828,9 @@ async def trading_signal(request: TradingSignalRequest):
                 "avg_down_pct": round(avg_down, 3) if avg_down is not None else None,
                 "max_up_pct": round(max_up, 3) if max_up is not None else None,
                 "max_down_pct": round(max_down, 3) if max_down is not None else None,
+                "max_move_pct": round(max_move, 3) if max_move is not None else None,
+                "up_times": up_times,
+                "down_times": down_times,
                 "move_basis": "close_to_previous_close",
                 "move_score": round(move_score, 2) if move_score is not None else None,
                 "range_score": round(range_score, 2) if range_score is not None else None,
@@ -9200,6 +9208,48 @@ def _calc_change_pct(ticker: str, period: str, interval: str = None, extended: b
         logger.warning(f"_calc_change_pct({ticker}, {period}): {e}")
         return None, None, None
 
+def _quote_price_fallback(sym: str) -> dict:
+    """Cheap quote fallback so a holding always gets at least a price when history/downloads time out."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(sym)
+        try:
+            fi = t.fast_info
+            last = _safe_float(getattr(fi, "last_price", None))
+            prev = _safe_float(getattr(fi, "previous_close", None))
+            if last is not None and last > 0:
+                pct = None
+                if prev and prev > 0:
+                    pct = (last - prev) / prev * 100
+                return {
+                    "price": round(last, 2),
+                    "change_percent": round(pct, 2) if pct is not None else None,
+                    "change": round(last - prev, 2) if prev else None,
+                }
+        except Exception:
+            pass
+        info = t.info
+        price = _safe_float(info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose"))
+        if price is not None and price > 0:
+            return {
+                "price": round(price, 2),
+                "change_percent": _safe_float(info.get("regularMarketChangePercent") or info.get("postMarketChangePercent")),
+                "change": _safe_float(info.get("regularMarketChange")),
+            }
+    except Exception as e:
+        logger.warning(f"_quote_price_fallback({sym}): {e}")
+    return {}
+
+def _holding_quote_fallback(sym: str, period: str, interval: str = None, extended: bool = False, start: str = None, end: str = None) -> dict:
+    """Try history first, then fall back to a light quote so prices are rarely missing."""
+    try:
+        pct, price, change = _calc_change_pct(sym, period, interval, extended, start=start, end=end)
+        if price is not None:
+            return {"change_percent": pct, "price": price, "change": change}
+    except Exception:
+        pass
+    return _quote_price_fallback(sym)
+
 def _fetch_etf_quote_raw(ticker: str, period: str = "1d", interval: str = None, extended: bool = False) -> dict:
     """Fetch quote data for an industry ETF (no cache/retry)."""
     try:
@@ -9279,6 +9329,23 @@ def _last_valid_close(frame):
         if vals.empty:
             return None
         return float(vals.iloc[-1])
+    except Exception:
+        return None
+
+def _first_intraday_open(frame):
+    """Get today's opening price from intraday data (first valid Open or Close)."""
+    try:
+        if frame is None or frame.empty:
+            return None
+        if "Open" in frame:
+            vals = frame["Open"].dropna()
+            if not vals.empty:
+                return float(vals.iloc[0])
+        if "Close" in frame:
+            vals = frame["Close"].dropna()
+            if not vals.empty:
+                return float(vals.iloc[0])
+        return None
     except Exception:
         return None
 
@@ -9386,8 +9453,56 @@ def _build_intraday_change(latest_price, previous_close, volume=None):
         "volume": int(volume) if volume is not None else None,
     }
 
-async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None) -> dict:
-    """Fetch price/change data for many tickers with live intraday handling for 1D."""
+def _chunks(seq, size):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+def _prices_from_bulk(bulk, tickers, extended: bool, interval: str) -> dict:
+    """Extract per-ticker price rows from one yfinance bulk download frame."""
+    out = {}
+    if bulk is None or getattr(bulk, "empty", True):
+        return out
+    for ticker in tickers:
+        try:
+            frame = _extract_yf_ticker_frame(bulk, ticker)
+            if frame is None or "Close" not in frame:
+                continue
+            vals, volume_series, session_label = _session_anchored_intraday_values(frame, extended and bool(interval))
+            vol_vals = volume_series.dropna().values if volume_series is not None else None
+            if len(vals) >= 2 and vals[0]:
+                built = {
+                    "price": float(vals[-1]),
+                    "change_percent": (vals[-1] - vals[0]) / vals[0] * 100,
+                    "change": float(vals[-1] - vals[0]),
+                    "volume": int(vol_vals[-1]) if vol_vals is not None and len(vol_vals) > 0 else None,
+                    "session": session_label,
+                }
+                _enrich_with_daily_stats(built, frame)
+                out[ticker] = built
+            elif len(vals) == 1:
+                out[ticker] = {"price": float(vals[0]), "change_percent": None, "change": None, "volume": None}
+        except Exception:
+            pass
+    return out
+
+def _download_batch_locked(yf_module, batch_tickers, lock_acquire_timeout: float = 5.0, **kwargs):
+    """Run a yfinance download for a small batch, degrading to unlocked if the global lock is stuck."""
+    if _yf_download_lock.acquire(timeout=lock_acquire_timeout):
+        try:
+            return yf_module.download(batch_tickers, **kwargs)
+        finally:
+            _yf_download_lock.release()
+    logger.warning("yf download lock busy; downloading batch without lock")
+    return yf_module.download(batch_tickers, **kwargs)
+
+async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None, batch_size: int = 8, batch_timeout: float = 25.0) -> dict:
+    """Fetch price/change data for many tickers, downloading in small sequential batches.
+
+    Splitting into batches keeps the yfinance calls short (fewer tickers per request),
+    a per-batch timeout prevents a hung download from blocking the whole request, and a
+    lock-acquire timeout keeps a stuck download from deadlocking every other batch. Any
+    ticker a batch fails to produce gets a light quote fallback so rows are rarely missing.
+    """
     import yfinance as yf
     loop = asyncio.get_event_loop()
     clean_tickers = [str(t).upper().strip() for t in tickers if str(t).strip()]
@@ -9396,41 +9511,24 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
 
     use_date_range = bool(start and end)
     prices = {}
-    try:
-        if use_date_range:
-            kwargs = {"start": start, "end": end, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
-            if interval:
-                kwargs["interval"] = interval
-                if extended:
-                    kwargs["prepost"] = True
-            bulk = await loop.run_in_executor(None, lambda: _locked_yf_download(yf, clean_tickers, **kwargs))
-            if bulk is not None and not bulk.empty:
-                for ticker in clean_tickers:
-                    try:
-                        frame = _extract_yf_ticker_frame(bulk, ticker)
-                        if frame is None or "Close" not in frame:
-                            continue
-                        vals, volume_series, session_label = _session_anchored_intraday_values(frame, extended and bool(interval))
-                        vol_vals = volume_series.dropna().values if volume_series is not None else None
-                        if len(vals) >= 2 and vals[0]:
-                            built = {
-                                "price": float(vals[-1]),
-                                "change_percent": (vals[-1] - vals[0]) / vals[0] * 100,
-                                "change": float(vals[-1] - vals[0]),
-                                "volume": int(vol_vals[-1]) if vol_vals is not None and len(vol_vals) > 0 else None,
-                                "session": session_label,
-                            }
-                            _enrich_with_daily_stats(built, frame)
-                            prices[ticker] = built
-                        elif len(vals) == 1:
-                            prices[ticker] = {"price": float(vals[0]), "change_percent": None, "change": None, "volume": None}
-                    except Exception:
-                        pass
-        elif not interval and period == "1d":
-            def download_intraday_and_daily():
-                with _yf_download_lock:
-                    intraday_data = yf.download(
-                        clean_tickers,
+
+    for batch in _chunks(clean_tickers, max(2, int(batch_size))):
+        try:
+            if use_date_range:
+                kwargs = {"start": start, "end": end, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
+                if interval:
+                    kwargs["interval"] = interval
+                    if extended:
+                        kwargs["prepost"] = True
+                bulk = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda b=batch, kw=kwargs: _download_batch_locked(yf, b, **kw)),
+                    timeout=batch_timeout,
+                )
+                prices.update(_prices_from_bulk(bulk, batch, extended, interval))
+            elif not interval and period == "1d":
+                def download_intraday_and_daily(batch_tickers):
+                    intraday_data = _download_batch_locked(
+                        yf, batch_tickers,
                         period="1d",
                         interval="1m",
                         group_by='ticker',
@@ -9439,8 +9537,8 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                         prepost=extended,
                         threads=True,
                     )
-                    daily_data = yf.download(
-                        clean_tickers,
+                    daily_data = _download_batch_locked(
+                        yf, batch_tickers,
                         period="5d",
                         interval="1d",
                         group_by='ticker',
@@ -9450,54 +9548,56 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                     )
                     return intraday_data, daily_data
 
-            intraday, daily = await loop.run_in_executor(None, download_intraday_and_daily)
-            for ticker in clean_tickers:
-                try:
-                    intraday_frame = _extract_yf_ticker_frame(intraday, ticker)
-                    daily_frame = _extract_yf_ticker_frame(daily, ticker)
-                    latest = _last_valid_close(intraday_frame)
-                    previous = _previous_daily_close(daily_frame)
-                    volume = None
-                    if intraday_frame is not None and "Volume" in intraday_frame:
-                        vol_vals = intraday_frame["Volume"].dropna().values
-                        volume = vol_vals.sum() if len(vol_vals) > 0 else None
-                    built = _build_intraday_change(latest, previous, volume)
-                    if built is not None:
-                        _enrich_with_daily_stats(built, daily_frame)
-                        prices[ticker] = built
-                except Exception:
-                    pass
-        else:
-            kwargs = {"period": period, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
-            if interval:
-                kwargs["interval"] = interval
-                if extended:
-                    kwargs["prepost"] = True
-            bulk = await loop.run_in_executor(None, lambda: _locked_yf_download(yf, clean_tickers, **kwargs))
-            if bulk is not None and not bulk.empty:
-                for ticker in clean_tickers:
+                intraday, daily = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda b=batch: download_intraday_and_daily(b)),
+                    timeout=batch_timeout + 10,
+                )
+                for ticker in batch:
                     try:
-                        frame = _extract_yf_ticker_frame(bulk, ticker)
-                        if frame is None or "Close" not in frame:
-                            continue
-                        vals, volume_series, session_label = _session_anchored_intraday_values(frame, extended and bool(interval))
-                        vol_vals = volume_series.dropna().values if volume_series is not None else None
-                        if len(vals) >= 2 and vals[0]:
-                            built = {
-                                "price": float(vals[-1]),
-                                "change_percent": (vals[-1] - vals[0]) / vals[0] * 100,
-                                "change": float(vals[-1] - vals[0]),
-                                "volume": int(vol_vals[-1]) if vol_vals is not None and len(vol_vals) > 0 else None,
-                                "session": session_label,
-                            }
-                            _enrich_with_daily_stats(built, frame)
+                        intraday_frame = _extract_yf_ticker_frame(intraday, ticker)
+                        daily_frame = _extract_yf_ticker_frame(daily, ticker)
+                        latest = _last_valid_close(intraday_frame)
+                        today_open = _first_intraday_open(intraday_frame)
+                        baseline = today_open if today_open is not None else _previous_daily_close(daily_frame)
+                        volume = None
+                        if intraday_frame is not None and "Volume" in intraday_frame:
+                            vol_vals = intraday_frame["Volume"].dropna().values
+                            volume = vol_vals.sum() if len(vol_vals) > 0 else None
+                        built = _build_intraday_change(latest, baseline, volume)
+                        if built is not None:
+                            _enrich_with_daily_stats(built, daily_frame)
                             prices[ticker] = built
-                        elif len(vals) == 1:
-                            prices[ticker] = {"price": float(vals[0]), "change_percent": None, "change": None, "volume": None}
                     except Exception:
                         pass
-    except Exception as e:
-        logger.warning(f"_bulk_price_changes failed: {e}")
+            else:
+                kwargs = {"period": period, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
+                if interval:
+                    kwargs["interval"] = interval
+                    if extended:
+                        kwargs["prepost"] = True
+                bulk = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda b=batch, kw=kwargs: _download_batch_locked(yf, b, **kw)),
+                    timeout=batch_timeout,
+                )
+                prices.update(_prices_from_bulk(bulk, batch, extended, interval))
+        except asyncio.TimeoutError:
+            logger.warning(f"_bulk_price_changes batch timeout: {batch}")
+        except Exception as e:
+            logger.warning(f"_bulk_price_changes batch failed ({batch}): {e}")
+
+        missing = [s for s in batch if s not in prices]
+        if missing:
+            tasks = [
+                loop.run_in_executor(
+                    None,
+                    lambda s=s, p=period, iv=interval, ex=extended, st=start, en=end: _holding_quote_fallback(s, p, iv, ex, st=st, en=en),
+                )
+                for s in missing
+            ]
+            fb_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for sym, r in zip(missing, fb_results):
+                if not isinstance(r, Exception) and r:
+                    prices[sym] = r
     return prices
 
 
@@ -9747,13 +9847,12 @@ async def etf_holdings(etf_tickers: List[str], period: str = "1d", interval: str
                 BATCH = 5
                 for i in range(0, len(missing), BATCH):
                     batch = missing[i:i+BATCH]
-                    tasks = [loop.run_in_executor(None, lambda s=s, p=period, iv=interval, ex=extended, st=start, en=end: _calc_change_pct(s, p, iv, ex, start=st, end=en)) for s in batch]
+                    tasks = [loop.run_in_executor(None, lambda s=s, p=period, iv=interval, ex=extended, st=start, en=end: _holding_quote_fallback(s, p, iv, ex, st=st, en=en)) for s in batch]
                     batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                     for sym, r in zip(batch, batch_results):
-                        if isinstance(r, Exception) or r is None:
+                        if isinstance(r, Exception) or not r:
                             continue
-                        pct, price, change = r
-                        fallback_changes[sym] = {"change_percent": pct, "price": price, "change": change}
+                        fallback_changes[sym] = r
                     if i + BATCH < len(missing):
                         await asyncio.sleep(0.5)
 
@@ -10435,61 +10534,37 @@ async def get_sync_status():
 
 
 # ── Tool-Calling Chat Endpoint (Streaming) ────────────────────────────────────
-@app.post("/api/backtest/ai/chat-with-tools")
-async def chat_with_tools_streaming(request: AIChatRequest, http_request: Request):
-    """Streaming ReAct + Parallel tool-calling chat endpoint
-    
-    Implements ReAct (Reasoning + Action + Observation) with parallel tool execution:
-    - Thought: Explicit reasoning about what to do
-    - Action: Call tools in parallel
-    - Observation: Analyze results
-    - Final Answer: Generate response
-    """
-    from fastapi.responses import StreamingResponse
-    from langchain_core.messages import HumanMessage, AIMessage
-    from modules.tool_calling_agent import ALL_TOOLS, SYSTEM_PROMPT
-    from datetime import datetime
-    import asyncio
-    
-    async def generate_stream():
-        try:
-            yield f"data: {json.dumps({'type': 'status', 'content': 'Backend received request...'})}\n\n"
-            settings = load_system_settings()
-            provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
-            model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
-            
-            logger.info(f"=== ReAct + Parallel Tool-Calling Chat ===")
-            logger.info(f"Provider: {provider}, Model: {model}")
-            
-            # Inject current datetime into system prompt
-            current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p %Z")
-            system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime))
-            response_budget = max(512, min(int(request.max_tokens or 8192), 20000))
-            if response_budget <= 2500:
-                answer_depth_instruction = (
-                    "ANSWER BUDGET: Short. Final answers should be compact: 1 short paragraph or 3-5 bullets, "
-                    "only the highest-signal facts."
-                )
-                tool_result_limit = 800
-            elif response_budget <= 9000:
-                answer_depth_instruction = (
-                    "ANSWER BUDGET: Mid. Final answers should be useful and structured: short summary, key details, "
-                    "and a practical takeaway when relevant."
-                )
-                tool_result_limit = 2000
-            else:
-                answer_depth_instruction = (
-                    "ANSWER BUDGET: Long. Final answers should be materially more complete: organize with sections, "
-                    "cover the important evidence from tools, include caveats, and do not compress to one paragraph."
-                )
-                tool_result_limit = 5000
 
-            system_prompt_with_time += f"""
+def _assistant_answer_budget(max_tokens):
+    """Map a requested max_tokens value to (budget, answer-depth instruction, tool-result truncation limit)."""
+    budget = max(512, min(int(max_tokens or 8192), 20000))
+    if budget <= 2500:
+        return budget, (
+            "ANSWER BUDGET: Short. Final answers should be compact: 1 short paragraph or 3-5 bullets, "
+            "only the highest-signal facts."
+        ), 800
+    if budget <= 9000:
+        return budget, (
+            "ANSWER BUDGET: Mid. Final answers should be useful and structured: short summary, key details, "
+            "and a practical takeaway when relevant."
+        ), 2000
+    return budget, (
+        "ANSWER BUDGET: Long. Final answers should be materially more complete: organize with sections, "
+        "cover the important evidence from tools, include caveats, and do not compress to one paragraph."
+    ), 5000
 
+
+def _unified_assistant_config_block(answer_depth_instruction: str) -> str:
+    """Shared behavior block appended to the assistant system prompt. Both the single-pass
+    tool-calling mode and the Strands agent-loop mode use this so every workflow (market
+    brief, fundamental screening, strategy create/backtest, expected patterns, etc.) behaves
+    identically regardless of which mode the user toggled in the UI."""
+    return f"""
 UNIFIED ASSISTANT CONFIG:
 - You are the only assistant mode. Do not mention Advisor/Analyst/Agent modes.
 - Use ReAct internally: decide what is needed, call tools, observe results, then answer.
 - Parallelize independent read-only tools in the same turn whenever useful.
+- While working, narrate your reasoning in 1-2 short sentences before calling tools (a brief agent monologue, e.g. "Let me pull the fundamentals first."). Keep it human-readable; never expose raw chain-of-thought or internal loop details.
 - Match the final response depth to the user's selected answer budget.
 - {answer_depth_instruction}
 - In final answers, never mention internal tool/function names such as get_market_overview, get_industry_heatmap, web_search, read_market_data, or read_candles. Use user-facing labels like market overview data, industry heatmap, news search, local dataset, or candle data.
@@ -10510,6 +10585,39 @@ UNIFIED ASSISTANT CONFIG:
 - If the user asks what APIs/tools are available or how the assistant is configured, explain the active provider/model and available tool categories.
 - For an expected pattern, future/projected trend, forecast chart, or forecast CSV, use the expected-pattern calculation. Explain that its central path and 80% band are statistical scenarios from recent OHLCV bars, not guaranteed predictions.
 """
+
+
+@app.post("/api/backtest/ai/chat-with-tools")
+async def chat_with_tools_streaming(request: AIChatRequest, http_request: Request):
+    """Streaming ReAct + Parallel tool-calling chat endpoint
+    
+    Implements ReAct (Reasoning + Action + Observation) with parallel tool execution:
+    - Thought: Explicit reasoning about what to do
+    - Action: Call tools in parallel
+    - Observation: Analyze results
+    - Final Answer: Generate response
+    """
+    from fastapi.responses import StreamingResponse
+    from langchain_core.messages import HumanMessage, AIMessage
+    from modules.tool_calling_agent import ALL_TOOLS, SYSTEM_PROMPT
+    from datetime import datetime
+    import asyncio
+    
+    async def generate_stream():
+        try:
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Processing your request...'})}\n\n"
+            settings = load_system_settings()
+            provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
+            model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
+            
+            logger.info(f"=== ReAct + Parallel Tool-Calling Chat ===")
+            logger.info(f"Provider: {provider}, Model: {model}")
+            
+            # Inject current datetime into system prompt
+            current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p %Z")
+            system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime))
+            response_budget, answer_depth_instruction, tool_result_limit = _assistant_answer_budget(request.max_tokens)
+            system_prompt_with_time += _unified_assistant_config_block(answer_depth_instruction)
             
             # Add thinking detail instructions based on user preference
             thinking_detail = getattr(request, 'thinking_detail', 'normal')
@@ -11001,7 +11109,7 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
     
     async def generate_strands_loop():
         try:
-            yield f"data: {json.dumps({'type': 'status', 'content': 'Backend received request...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Processing your request...'})}\n\n"
             settings = load_system_settings()
             provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
             model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
@@ -11022,7 +11130,21 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
             from langchain_core.messages import SystemMessage
             current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p %Z")
             system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime))
-            
+
+            # Share the same assistant behavior/config as single-pass tool-calling mode so
+            # workflows (market brief, fundamental screening, strategy create/backtest, etc.)
+            # resolve identically no matter which mode the UI toggled to.
+            response_budget, answer_depth_instruction, tool_result_limit = _assistant_answer_budget(request.max_tokens)
+            system_prompt_with_time += _unified_assistant_config_block(answer_depth_instruction)
+            thinking_detail = getattr(request, 'thinking_detail', 'normal')
+            if thinking_detail == 'brief':
+                system_prompt_with_time += "\n\n⚡ THINKING STYLE: Keep your reasoning brief and to the point. Only explain key decisions."
+            elif thinking_detail == 'detailed':
+                system_prompt_with_time += "\n\n🔍 THINKING STYLE: Provide detailed reasoning. Explain your thought process, alternatives considered, and why you chose specific tools or approaches."
+            custom_agent_instructions = _agent_instruction_block(getattr(request, "agent_instructions", None))
+            if custom_agent_instructions:
+                system_prompt_with_time += f"\n\nUSER AGENT INSTRUCTIONS:\n{custom_agent_instructions}\n\nFollow these operator preferences when they do not conflict with tool safety, data accuracy, or user-visible answer requirements."
+
             # Add system prompt as SystemMessage (not HumanMessage) so model treats it as instructions
             conversation_history.append(SystemMessage(content=system_prompt_with_time))
             
@@ -11057,8 +11179,6 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
             chat_sessions[chat_task_id] = {"stop_requested": False}
             app.state.chat_sessions = chat_sessions
             
-            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Starting Strands agent loop (unlimited iterations, timeout-based)...'})}\n\n"
-            
             while True:  # Continue until model responds or user stops
                 loop_iteration += 1
                 logger.info(f"Strands Loop Iteration {loop_iteration}")
@@ -11076,8 +11196,6 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                     break
                 
                 # REASONING PHASE: Invoke LLM
-                yield f"data: {json.dumps({'type': 'thinking', 'content': f'[Loop {loop_iteration}] Reasoning phase: analyzing context...'})}\n\n"
-                
                 # Count prompt tokens for this iteration
                 prompt_text = ""
                 for m in conversation_history:
@@ -11091,165 +11209,174 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                 
                 # TOOL SELECTION PHASE: Check if LLM wants to use tools
                 if hasattr(response, "tool_calls") and response.tool_calls:
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'[Loop {loop_iteration}] Tool selection: LLM selected {len(response.tool_calls)} tools'})}\n\n"
+                    # Agent monologue: stream the model's own narrated reasoning (if any)
+                    # so the thinking panel reads like a natural monologue, not loop logs.
+                    monologue = str(getattr(response, 'content', '') or '').strip()
+                    if monologue:
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': monologue})}\n\n"
                     
-                    # TOOL EXECUTION PHASE: Execute selected tools
+                    # TOOL EXECUTION PHASE: Execute selected tools in parallel (same as quick mode)
                     tool_results = []
-                    
-                    for tool_call in response.tool_calls:
-                        tool_name = tool_call.get("name")
+
+                    # Assign stable keys and stream all "running" steps first
+                    for idx, tool_call in enumerate(response.tool_calls):
+                        raw_tool_name = tool_call.get("name")
+                        tool_name = _normalize_agent_tool_name(raw_tool_name)
+                        tool_call["name"] = tool_name
                         tool_input = tool_call.get("args", {})
-                        
-                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'[Loop {loop_iteration}] Executing tool: {tool_name}'})}\n\n"
-                        
+                        tool_key = f"{tool_name}:{loop_iteration}:{idx}"
+                        tool_call["_tool_key"] = tool_key
+                        public_tool_name = _public_tool_label(tool_name)
                         step_start = {
-                            "label": f"🔧 {tool_name}",
+                            "label": f"🔧 {public_tool_name}",
                             "status": "running",
-                            "comment": f"Executing {tool_name}",
-                            "note": str(tool_input)[:100]
+                            "comment": f"Executing {public_tool_name}",
+                            "note": str(tool_input)[:100],
+                            "tool": tool_name,
+                            "tool_args": tool_input,
+                            "_tool_key": tool_key,
                         }
                         all_steps.append(step_start)
                         yield f"data: {json.dumps({'type': 'step', 'step': step_start})}\n\n"
-                        
-                        # Find and execute tool
-                        tool_executed = False
+
+                    # Invoke every selected tool concurrently
+                    async def execute_tool(tool_call):
+                        tool_name = tool_call.get("name")
+                        tool_input = tool_call.get("args", {})
                         for t in ALL_TOOLS:
                             if t.name == tool_name:
                                 try:
                                     loop = asyncio.get_event_loop()
                                     result = await loop.run_in_executor(None, lambda: t.invoke(tool_input))
-                                    
-                                    tool_results.append({
-                                        "tool_name": tool_name,
-                                        "result": result,
-                                        "error": None
-                                    })
-                                    
-                                    tool_data[tool_name] = result
-                                    tools_used_total.append(tool_name)
-                                    
-                                    # Only task-creating tools may register a background task.
-                                    # check_task_status returns the queried ID too.
-                                    if tool_name in {"generate_strategy", "run_backtest", "download_market_data"} and isinstance(result, dict) and result.get("task_id"):
-                                        task_id = result["task_id"]
-                                        task_label = f"{tool_name}: {result.get('ticker', result.get('strategy', 'Task'))}"
-                                        
-                                        if tool_name == "generate_strategy":
-                                            task_type = "forge"
-                                        elif tool_name == "run_backtest":
-                                            task_type = "backtest"
-                                        elif tool_name == "download_market_data":
-                                            task_type = "download"
-                                        else:
-                                            task_type = "task"
-                                        
-                                        triggered_tasks.append({"task_id": task_id, "task_type": task_type, "label": task_label})
-                                        yield f"data: {json.dumps({'type': 'task_started', 'task_id': task_id, 'task_type': task_type, 'label': task_label})}\n\n"
-                                        
-                                        # Poll for completion - with dynamic timeout based on task type
-                                        yield f"data: {json.dumps({'type': 'thinking', 'content': f'[Loop {loop_iteration}] Waiting for {tool_name} to complete...'})}\n\n"
-                                        
-                                        # Set timeout dynamically based on task type
-                                        # Format: max_seconds = timeout in seconds (1 poll per second)
-                                        if tool_name == "download_market_data":
-                                            max_seconds = 300  # 5 minutes for downloads
-                                        elif tool_name == "generate_strategy":
-                                            max_seconds = 600  # 10 minutes for generation
-                                        elif tool_name == "run_backtest":
-                                            max_seconds = 1800  # 30 minutes for backtests (can be very slow)
-                                        else:
-                                            max_seconds = 1200  # 20 minutes default
-                                        
-                                        task_completed = False
-                                        poll_count = 0
-                                        timeout_reached = False
-                                        
-                                        while poll_count < max_seconds and not task_completed:
-                                            await asyncio.sleep(1)
-                                            poll_count += 1
-                                            
-                                            for t2 in ALL_TOOLS:
-                                                if t2.name == "check_task_status":
-                                                    try:
-                                                        loop = asyncio.get_event_loop()
-                                                        status_result = await loop.run_in_executor(None, lambda: t2.invoke({"task_id": task_id}))
-                                                        
-                                                        if status_result:
-                                                            status = status_result.get("status")
-                                                            progress = status_result.get("progress", 0)
-                                                            current = status_result.get("current", "")
-                                                            
-                                                            yield f"data: {json.dumps({'type': 'progress', 'label': task_label, 'pct': progress, 'detail': current})}\n\n"
-                                                            
-                                                            if status == "completed":
-                                                                result["status"] = "completed"
-                                                                result["results"] = status_result.get("results")
-                                                                tool_data[tool_name] = result
-                                                                task_completed = True
-                                                                break
-                                                            elif status == "failed":
-                                                                result["status"] = "failed"
-                                                                result["error"] = status_result.get("error")
-                                                                tool_data[tool_name] = result
-                                                                task_completed = True
-                                                                break
-                                                    except Exception as e:
-                                                        logger.error(f"check_task_status error: {e}")
-                                                        break
-                                        
-                                        # Check if we hit timeout
-                                        if not task_completed:
-                                            timeout_reached = True
-                                            # Preserve the work done so far - store partial result
-                                            result["status"] = "timeout"
-                                            result["note"] = f"Task still running after {max_seconds} seconds ({tool_name})"
-                                            tool_data[tool_name] = result
-                                            
-                                            timeout_step = {
-                                                "label": f"⏱️ {tool_name} Timeout",
-                                                "status": "info",
-                                                "comment": f"Task did not complete within {max_seconds} seconds",
-                                                "note": f"Task {task_id} still running. Can check status in Task Center."
-                                            }
-                                            all_steps.append(timeout_step)
-                                            yield f"data: {json.dumps({'type': 'step', 'step': timeout_step})}\n\n"
-                                    
-                                    step_success = {
-                                        "label": f"✅ {tool_name}",
-                                        "status": "success",
-                                        "comment": f"Tool executed successfully",
-                                        "note": str(result)[:100]
-                                    }
-                                    all_steps.append(step_success)
-                                    yield f"data: {json.dumps({'type': 'step', 'step': step_success})}\n\n"
-                                    
-                                    tool_executed = True
-                                    logger.info(f"✓ Tool {tool_name} executed in loop iteration {loop_iteration}")
-                                    break
+                                    return (tool_name, tool_input, result, None, tool_call)
                                 except Exception as e:
                                     logger.error(f"Tool {tool_name} error: {e}")
-                                    tool_results.append({
-                                        "tool_name": tool_name,
-                                        "result": None,
-                                        "error": str(e)
-                                    })
-                                    
-                                    step_error = {
-                                        "label": f"❌ {tool_name}",
-                                        "status": "error",
-                                        "comment": "Tool execution failed",
-                                        "note": str(e)[:100]
-                                    }
-                                    all_steps.append(step_error)
-                                    yield f"data: {json.dumps({'type': 'step', 'step': step_error})}\n\n"
+                                    return (tool_name, tool_input, None, str(e), tool_call)
+                        return (tool_name, tool_input, None, "Tool not found", tool_call)
+
+                    parallel_results = await asyncio.gather(*[execute_tool(tc) for tc in response.tool_calls])
+
+                    # Process results in order (task tools poll sequentially, matching quick mode)
+                    for tool_name, tool_input, result, error, tool_call in parallel_results:
+                        tool_key = tool_call.get("_tool_key")
+                        public_tool_name = _public_tool_label(tool_name)
+
+                        if error:
+                            tool_results.append({"tool_name": tool_name, "result": None, "error": error})
+                            step_error = {
+                                "label": f"❌ {public_tool_name}",
+                                "status": "error",
+                                "comment": "Tool execution failed",
+                                "note": error[:100],
+                                "tool": tool_name,
+                                "tool_args": tool_input,
+                                "tool_error": error,
+                                "_tool_key": tool_key,
+                            }
+                            all_steps.append(step_error)
+                            yield f"data: {json.dumps({'type': 'step', 'step': step_error})}\n\n"
+                            continue
+
+                        tool_results.append({"tool_name": tool_name, "result": result, "error": None})
+                        tool_data[tool_name] = result
+                        tools_used_total.append(tool_name)
+
+                        # Only task-creating tools may register a background task.
+                        # check_task_status returns the queried ID too.
+                        if tool_name in {"generate_strategy", "run_backtest", "download_market_data"} and isinstance(result, dict) and result.get("task_id"):
+                            task_id = result["task_id"]
+                            task_label = f"{public_tool_name}: {result.get('ticker', result.get('strategy', 'Task'))}"
+
+                            if tool_name == "generate_strategy":
+                                task_type = "forge"
+                            elif tool_name == "run_backtest":
+                                task_type = "backtest"
+                            elif tool_name == "download_market_data":
+                                task_type = "download"
+                            else:
+                                task_type = "task"
+
+                            triggered_tasks.append({"task_id": task_id, "task_type": task_type, "label": task_label})
+                            yield f"data: {json.dumps({'type': 'task_started', 'task_id': task_id, 'task_type': task_type, 'label': task_label})}\n\n"
+
+                            # Format: max_seconds = timeout in seconds (1 poll per second)
+                            if tool_name == "download_market_data":
+                                max_seconds = 300  # 5 minutes for downloads
+                            elif tool_name == "generate_strategy":
+                                max_seconds = 600  # 10 minutes for generation
+                            elif tool_name == "run_backtest":
+                                max_seconds = 1800  # 30 minutes for backtests (can be very slow)
+                            else:
+                                max_seconds = 1200  # 20 minutes default
+
+                            task_completed = False
+                            poll_count = 0
+
+                            while poll_count < max_seconds and not task_completed:
+                                await asyncio.sleep(1)
+                                poll_count += 1
+
+                                status_result = None
+                                for t2 in ALL_TOOLS:
+                                    if t2.name == "check_task_status":
+                                        try:
+                                            loop = asyncio.get_event_loop()
+                                            status_result = await loop.run_in_executor(None, lambda: t2.invoke({"task_id": task_id}))
+                                        except Exception as e:
+                                            logger.error(f"check_task_status error: {e}")
+                                            break
+                                if not status_result:
+                                    continue
+
+                                status = status_result.get("status")
+                                progress = status_result.get("progress", 0)
+                                current = status_result.get("current", "")
+
+                                yield f"data: {json.dumps({'type': 'progress', 'label': task_label, 'pct': progress, 'detail': current})}\n\n"
+
+                                if status == "completed":
+                                    result["status"] = "completed"
+                                    result["results"] = status_result.get("results")
+                                    tool_data[tool_name] = result
+                                    task_completed = True
                                     break
-                        
-                        if not tool_executed:
-                            tool_results.append({
-                                "tool_name": tool_name,
-                                "result": None,
-                                "error": "Tool not found"
-                            })
+                                elif status == "failed":
+                                    result["status"] = "failed"
+                                    result["error"] = status_result.get("error")
+                                    tool_data[tool_name] = result
+                                    task_completed = True
+                                    break
+
+                            # Check if we hit timeout
+                            if not task_completed:
+                                # Preserve the work done so far - store partial result
+                                result["status"] = "timeout"
+                                result["note"] = f"Task still running after {max_seconds} seconds ({tool_name})"
+                                tool_data[tool_name] = result
+
+                                timeout_step = {
+                                    "label": f"⏱️ {public_tool_name} Timeout",
+                                    "status": "info",
+                                    "comment": f"Task did not complete within {max_seconds} seconds",
+                                    "note": f"Task {task_id} still running. Can check status in Task Center.",
+                                    "_tool_key": tool_key,
+                                }
+                                all_steps.append(timeout_step)
+                                yield f"data: {json.dumps({'type': 'step', 'step': timeout_step})}\n\n"
+
+                        step_success = {
+                            "label": f"✅ {public_tool_name}",
+                            "status": "success",
+                            "comment": "Tool executed successfully",
+                            "note": str(result)[:100],
+                            "tool": tool_name,
+                            "tool_args": tool_input,
+                            "tool_result": result,
+                            "_tool_key": tool_key,
+                        }
+                        all_steps.append(step_success)
+                        yield f"data: {json.dumps({'type': 'step', 'step': step_success})}\n\n"
+                        logger.info(f"✓ Tool {tool_name} executed in loop iteration {loop_iteration}")
                     
                     # Add tool results to conversation history (Strands accumulates context)
                     # Only add AIMessage if there's actual content (Mistral requires content or tool_calls)
@@ -11262,32 +11389,42 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                         if tr["error"]:
                             tool_summary += f"\n{tr['tool_name']}: ERROR - {tr['error']}"
                         else:
-                            tool_summary += f"\n{tr['tool_name']}: {json.dumps(tr['result'], indent=2)[:300]}"
+                            tool_summary += f"\n{tr['tool_name']}: {json.dumps(tr['result'], indent=2)[:tool_result_limit]}"
                     
                     conversation_history.append(HumanMessage(content=tool_summary))
                     
                     # Loop continues: Go back to REASONING PHASE with accumulated context
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'[Loop {loop_iteration}] Tool results added to context. Continuing loop...'})}\n\n"
                     
                 else:
                     # NO TOOLS SELECTED: LLM produced final response
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'[Loop {loop_iteration}] No tools selected. Generating final response...'})}\n\n"
                     
-                    # Stream the response token-by-token
+                    # Stream the final response (non-stream invoke already returned full text)
                     response_text = ""
-                    if hasattr(response, 'content'):
-                        response_text = response.content
-                    
-                    # If response is empty, stream it
-                    if response_text:
-                        for chunk in response_text:
-                            yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
+                    if hasattr(response, 'content') and response.content:
+                        response_text = str(response.content)
+                        yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
                     else:
                         # Try streaming from LLM
-                        for chunk in llm.stream(conversation_history):
-                            if hasattr(chunk, 'content') and chunk.content:
-                                response_text += chunk.content
-                                yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
+                        try:
+                            final_llm = llm.bind(max_tokens=response_budget)
+                            for chunk in final_llm.stream(conversation_history):
+                                if hasattr(chunk, 'content') and chunk.content:
+                                    response_text += chunk.content
+                                    yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
+                        except Exception as stream_error:
+                            logger.warning(f"Strands final stream failed; retrying non-stream response: {stream_error}")
+                            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Provider stream dropped; retrying final answer without streaming...'})}\n\n"
+                            try:
+                                fallback_response = final_llm.invoke(conversation_history)
+                                response_text = _sanitize_assistant_response(getattr(fallback_response, "content", str(fallback_response)) or "")
+                            except Exception as fallback_error:
+                                logger.error(f"Strands final fallback failed: {fallback_error}", exc_info=True)
+                                response_text = (
+                                    "The agent loop finished, but the model provider connection dropped while writing the final answer. "
+                                    f"Completed {loop_iteration} loop iteration(s) with {len(set(tools_used_total))} data source(s). "
+                                    "Please retry the same question, or switch provider/model if this keeps happening."
+                                )
+                            yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
                     
                     # Exit loop: Final response generated
                     final_step = {
@@ -11300,8 +11437,7 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                     yield f"data: {json.dumps({'type': 'step', 'step': final_step})}\n\n"
                     
                     # Send completion
-                    tools_summary = f"Strands loop completed in {loop_iteration} iterations. Used {len(set(tools_used_total))} unique tools: {', '.join(set(tools_used_total)) if tools_used_total else 'none'}"
-                    yield f"data: {json.dumps({'type': 'done', 'thinking': tools_summary, 'steps': all_steps, 'tools_used': list(set(tools_used_total)), 'data': tool_data, 'triggered_tasks': triggered_tasks, 'loop_iterations': loop_iteration, 'task_id': chat_task_id, 'usage': {'prompt_tokens': total_prompt_tokens, 'completion_tokens': total_completion_tokens, 'total_tokens': total_prompt_tokens + total_completion_tokens}})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'steps': all_steps, 'tools_used': list(set(tools_used_total)), 'data': tool_data, 'triggered_tasks': triggered_tasks, 'loop_iterations': loop_iteration, 'task_id': chat_task_id, 'usage': {'prompt_tokens': total_prompt_tokens, 'completion_tokens': total_completion_tokens, 'total_tokens': total_prompt_tokens + total_completion_tokens}})}\n\n"
                     break
         
         except asyncio.CancelledError:
