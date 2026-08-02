@@ -1,10 +1,21 @@
-## Trading Spy
+# TradingSpy: AI-Powered Trading Research & Backtesting Workstation
 
-> Local-first AI trading research: market heatmaps, news catalysts, strategy generation, Backtrader backtests, and transparent agent runs in one Docker app.
+[![Stars](https://img.shields.io/github/stars/mrhustlex/TradingSpy-TradingAgentService)](https://github.com/mrhustlex/TradingSpy-TradingAgentService)
+[![License](https://img.shields.io/github/license/mrhustlex/TradingSpy-TradingAgentService)](https://github.com/mrhustlex/TradingSpy-TradingAgentService)
+[![Docker Pulls](https://img.shields.io/docker/pulls/mrhustlex/tradingspy)](https://hub.docker.com/r/mrhustlex/tradingspy)
+[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://github.com/mrhustlex/TradingSpy-TradingAgentService)
 
-TradingSpy is an open-source research workstation for traders and builders who want to ask questions, inspect market context, generate strategy ideas, and test them against real historical candles without wiring together five separate tools.
+**Open-source, local-first AI trading research** — generate strategies, backtest them, and iterate using loop engineering. No cloud accounts. No telemetry. No broker connection. Runs entirely in Docker.
 
-It is not a broker and it does not place trades. It is a local research environment for analysis, backtesting, and strategy iteration. Fully open-source, zero data privacy concerns, and free of charge.
+TradingSpy is an AI-powered trading research workstation for traders and developers who want to:
+
+- **Generate** trading strategies from plain English descriptions using AI
+- **Backtest** every strategy against real historical candles with Backtrader
+- **Iterate** automatically — loop engineering keeps improving until it beats buy-and-hold
+- **Analyze** markets with heatmaps, news catalysts, insider data, and technical indicators
+- **Compare** results against benchmarks transparently in the Task Center
+
+[Get Started](#quick-start) · [Documentation](https://mrhustlex.github.io/tradingspy) · [GitHub](https://github.com/mrhustlex/TradingSpy-TradingAgentService) · [Buy Me a Coffee](https://buymeacoffee.com/mrhustlex)
 
 <p align="center">
   <a href="https://mrhustlex.github.io/tradingspy">
@@ -210,9 +221,32 @@ docker compose down
 
 Runtime data remains under `backend/data/`. Pull updates and rebuild with `git pull && docker compose up -d --build`.
 
-## ACP Skill Bundle for Other Agents
+## Screenshots
 
-Use `skills/skills.md` for a ready-to-use ACP skill contract that targets the same UI runtime via ACP `agent_name="ui-assistant"`.
+| Market Heatmap | Strategy Backtest | Agent Chat |
+| --- | --- | --- |
+| <img src="docs/images/UI/Market Overview.png" alt="Sector Heatmap" width="100%" /> | <img src="docs/images/UI/Price Prediction.png" alt="Stock Prediction" width="100%" /> | <img src="docs/images/agent/agent.gif" alt="Trading Agent" width="100%" /> |
+| Sector heatmap with 25+ industry ETFs, 16 time periods | Probabilistic price paths with 80% uncertainty bands | AI-powered chat agent analyzing market data |
+
+---
+
+## Why TradingSpy?
+
+| | TradingSpy | QuantConnect | Backtrader | TradingView |
+| --- | --- | --- | --- | --- |
+| **Local-first** | ✅ All data on your machine | ❌ Cloud-based | ✅ Local Python lib | ❌ Cloud-based |
+| **AI strategy generation** | ✅ Plain English → Backtrader strategy | ❌ Manual coding | ❌ Manual coding | ❌ Manual coding |
+| **Loop engineering** | ✅ Auto-iterates until it beats buy-and-hold | ❌ | ❌ | ❌ |
+| **Free** | ✅ Open source | ❌ Paid tiers | ✅ Open source | ❌ Paid tiers |
+| **No account needed** | ✅ | ❌ | ✅ | ❌ |
+| **Docker one-click** | ✅ | ❌ | ❌ | ❌ |
+| **Transparent agent runs** | ✅ Full tool call log | ❌ | ❌ | ❌ |
+
+---
+
+## Star TradingSpy
+
+If TradingSpy saved you time, consider starring the repo — it helps others find it. ⭐ [https://github.com/mrhustlex/TradingSpy-TradingAgentService](https://github.com/mrhustlex/TradingSpy-TradingAgentService)
 
 ---
 
@@ -324,9 +358,9 @@ Keep the dataset, generated strategy, benchmark, and run details together when s
 | View backend logs | `docker compose logs -f backend` |
 | View frontend logs | `docker compose logs -f frontend` |
 | View SearXNG logs | `docker compose logs -f searxng` |
-| Full rebuild | `docker compose build --no-cache && docker compose up -d` |
-| Check disk usage | `docker system df` |
-| Prune build cache | `docker builder prune` |
+## ACP Skill Bundle for Other Agents
+
+Use `skills/skills.md` for a ready-to-use ACP skill contract that targets the same UI runtime via ACP `agent_name="ui-assistant"`.
 
 ---
 
@@ -336,6 +370,8 @@ Keep the dataset, generated strategy, benchmark, and run details together when s
 - Per-agent GIF demos in README
 - More LLM provider integrations
 - Strategy sharing and export
+- Docker Hub published image
+- One-click deploy (Gitpod, Replit)
 
 > Join the conversation: [Discord](https://discord.gg/tradingspy) *(coming soon)*
 
