@@ -3,15 +3,51 @@ Orchestration tools for triggering strategy generation, backtesting, and data do
 """
 
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 import requests
 import logging
 import os
+import inspect
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
 # Get the backend URL from environment or default to localhost
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+
+# Hidden LLM-config keys forwarded to the backend for LLM-backed tools so the
+# assistant chat's provider/model/api_key settings apply app-wide (strategy
+# generation, improvements, etc.) instead of falling back to the default provider.
+LLM_CONFIG_KEYS = ("provider", "model", "api_key", "provider_config")
+
+
+class GenerateStrategyArgs(BaseModel):
+    description: str = Field(description="Natural language description of the strategy (e.g., \"momentum strategy with RSI crossover\")")
+    count: int = Field(default=1, description="Number of strategy variations to generate (default 1, max 3)")
+
+
+def invoke_tool(tool_obj, tool_input: dict, llm_config: dict | None = None):
+    """Invoke a tool, injecting hidden LLM provider config for LLM-backed tools.
+
+    ``generate_strategy`` spawns an async task on the backend that builds its own
+    LLM client. Without explicit config it falls back to the app default provider,
+    which may lack an API key. The chat loops pass the request's provider/model/
+    api_key/provider_config here so the same credentials used for the chat are
+    used for generation. These keys stay hidden from the model's tool schema.
+    """
+    if (
+        getattr(tool_obj, "name", "") == "generate_strategy"
+        and llm_config
+        and hasattr(tool_obj, "func")
+        and "api_key" in inspect.signature(tool_obj.func).parameters
+    ):
+        merged = dict(tool_input or {})
+        for key in LLM_CONFIG_KEYS:
+            value = llm_config.get(key)
+            if value not in (None, "", {}):
+                merged[key] = value
+        return tool_obj.func(**merged)
+    return tool_obj.invoke(tool_input)
 
 
 @tool
@@ -91,14 +127,14 @@ def list_available_datasets() -> dict:
         return {"success": False, "error": str(e)}
 
 
-@tool
-def generate_strategy(description: str, count: int = 1) -> dict:
+@tool(args_schema=GenerateStrategyArgs)
+def generate_strategy(description: str, count: int = 1, provider: str = None, model: str = None, api_key: str = None, provider_config: dict = None) -> dict:
     """Generate a trading strategy based on a description. This starts an async task.
-    
+
     Args:
         description: Natural language description of the strategy (e.g., "momentum strategy with RSI crossover")
         count: Number of strategy variations to generate (default 1, max 3)
-    
+
     Returns:
         dict with 'task_id' to track the generation progress
     """
@@ -108,6 +144,16 @@ def generate_strategy(description: str, count: int = 1) -> dict:
             "count": min(count, 3),
             "mode": "agnostic"
         }
+        # Forward the caller's LLM credentials so generation uses the same
+        # provider/model/api_key as the assistant chat (see invoke_tool).
+        if provider:
+            payload["provider"] = provider
+        if model:
+            payload["model"] = model
+        if api_key:
+            payload["api_key"] = api_key
+        if provider_config:
+            payload["provider_config"] = provider_config
         response = requests.post(f"{BACKEND_URL}/api/backtest/ai/generate", json=payload, timeout=10)
         if response.status_code == 200:
             data = response.json()

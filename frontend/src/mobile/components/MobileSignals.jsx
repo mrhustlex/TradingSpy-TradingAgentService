@@ -163,6 +163,7 @@ const PatternChart = ({ pattern }) => {
 
 const MobileSignals = ({ ticker, onClose }) => {
   const [signal, setSignal] = useState(null);
+  const [signalError, setSignalError] = useState('');
   const [allSignals, setAllSignals] = useState([]);
   const [signalLoading, setSignalLoading] = useState(false);
   const [pattern, setPattern] = useState(null);
@@ -215,6 +216,7 @@ const MobileSignals = ({ ticker, onClose }) => {
   const loadSignals = useCallback(async (targets) => {
     setSignalLoading(true);
     setSignal(null);
+    setSignalError('');
     setAllSignals([]);
     try {
       const res = await axios.post(`${INTELLIGENCE_SERVICE}/trading-signal`, {
@@ -224,13 +226,21 @@ const MobileSignals = ({ ticker, onClose }) => {
       }, { timeout: 20000 });
       const list = res.data.signals || [];
       setAllSignals(list);
-      setSignal(list.find(x => !x.error) || null);
+      const mine = list.find(x => String(x.ticker).toUpperCase() === symbol);
+      if (mine && !mine.error) {
+        setSignal(mine);
+      } else {
+        setSignal(null);
+        const reason = mine?.error || (list.find(x => x.error)?.error) || 'No signal data';
+        setSignalError(reason);
+      }
     } catch (e) {
       setSignal(null);
+      setSignalError('Signal service unreachable');
     } finally {
       setSignalLoading(false);
     }
-  }, [interval]);
+  }, [interval, symbol]);
 
   const fetchAll = useCallback(async () => {
     if (!symbol) return;
@@ -354,8 +364,8 @@ const MobileSignals = ({ ticker, onClose }) => {
         </div>
       )}
       {!signalLoading && !signal && (
-        <div className="mobile-loading" style={{ opacity: 0.5 }}>
-          <span>No signal data</span>
+        <div className="mobile-loading" style={{ opacity: 0.6 }}>
+          <span style={{ textAlign: 'center' }}>{signalError || 'No signal data'}</span>
         </div>
       )}
       {!signalLoading && signal && (

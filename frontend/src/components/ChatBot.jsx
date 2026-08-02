@@ -652,6 +652,11 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
     const shouldStickToBottomRef = useRef(true);
     const agentPollFailureRef = useRef(0);
 
+    // Generation tasks streamed inline into a message bubble: msgId -> { taskId, taskType }.
+    // Drives the per-message "Stop Task" button so it only shows while that message's
+    // own generation is actually running (not tied to the global chat isStreaming state).
+    const [generatingTasks, setGeneratingTasks] = useState({});
+
     // Get current thread's streaming state
     const currentThreadStreaming = getThreadState(activeThread.id);
     const { isStreaming, streamingMessage, agentProgress, confirmRequest, queuedMessages, pendingAgentRequest, liveCommentary, currentStreamingId } = currentThreadStreaming;
@@ -1022,6 +1027,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 history: requestHistory,
                 history_limit: historyLimit,
                 max_tokens: getMaxTokens(),
+                max_output_chars: customWordLimit ? Number(customWordLimit) : undefined,
                 thinking_detail: thinkingDetail,
                 agent_instructions: agentInstructions.trim() || null,
                 provider,
@@ -1984,7 +1990,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     const getMaxTokens = () => {
         if (customWordLimit && !isNaN(customWordLimit) && Number(customWordLimit) > 0) {
-            return Math.round(Number(customWordLimit) * 1.3);
+            return Math.min(20000, Math.max(1024, Math.round(Number(customWordLimit) * 1.4)));
         }
         const lengths = { short: 2048, mid: 8192, long: 16384 };
         return lengths[responseLength] || 8192;
@@ -2026,6 +2032,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                 history: requestHistory,
                 history_limit: historyLimit,
                 max_tokens: getMaxTokens(),
+                max_output_chars: customWordLimit ? Number(customWordLimit) : undefined,
                 thinking_detail: thinkingDetail,
                 agent_instructions: agentInstructions.trim() || null,
             };
@@ -2261,6 +2268,20 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
 
     // ── stream a generation task and update a message bubble live ─────────────
     const streamGenerationTask = async (tid, msgId, taskId, stratLabel) => {
+        setGeneratingTasks(prev => ({ ...prev, [msgId]: { taskId, taskType: 'forge' } }));
+        try {
+            return await streamGenerationTaskInner(tid, msgId, taskId, stratLabel);
+        } finally {
+            setGeneratingTasks(prev => {
+                if (!(msgId in prev)) return prev;
+                const next = { ...prev };
+                delete next[msgId];
+                return next;
+            });
+        }
+    };
+
+    const streamGenerationTaskInner = async (tid, msgId, taskId, stratLabel) => {
         const controller = new AbortController();
         let streamText = '';
         let marketAnalysis = '';
@@ -3992,7 +4013,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                 type="number"
                                 min="50"
                                 max="100000"
-                                placeholder="Custom word limit"
+                                placeholder="Custom output limit (chars)"
                                 value={customWordLimit}
                                 onChange={e => {
                                     setCustomWordLimit(e.target.value);
@@ -4624,16 +4645,25 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
                                     )}
 
                                     {/* stop button for running tasks */}
-                                    {message.taskId && isLoading && (
+                                    {message.taskId && generatingTasks[message.id] && (
                                         <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem' }}>
                                             <button
                                                 onClick={async () => {
+                                                    const gen = generatingTasks[message.id];
+                                                    const taskId = gen?.taskId || message.taskId;
+                                                    const isForge = gen?.taskType === 'forge';
                                                     try {
-                                                        const response = await fetch(`${BACKTEST_SERVICE}/ai/chat-strands/${message.taskId}/stop`, {
-                                                            method: 'DELETE'
-                                                        });
+                                                        const response = await fetch(
+                                                            `${BACKTEST_SERVICE}/ai/${isForge ? `generate/${taskId}/cancel` : `chat-strands/${taskId}/stop`}`,
+                                                            { method: isForge ? 'POST' : 'DELETE' }
+                                                        );
                                                         if (response.ok) {
                                                             console.log('✅ Stop signal sent');
+                                                            setGeneratingTasks(prev => {
+                                                                const next = { ...prev };
+                                                                delete next[message.id];
+                                                                return next;
+                                                            });
                                                         }
                                                     } catch (e) {
                                                         console.error('Failed to stop task:', e);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, lazy, Suspense } from 'react';
 import axios from 'axios';
 import Papa from 'papaparse';
 import { RefreshCw, X, Zap, Loader2, MessageCircleQuestion } from 'lucide-react';
@@ -97,6 +97,13 @@ const isEtfTicker = (ticker) => Boolean(INDUSTRY_PROXY_META[String(ticker || '')
 
 const PERIOD_OPTIONS = ['1d', '5d', '1mo', '3mo', '6mo', '1y', 'ytd', 'max'];
 
+const CHART_INTERVALS = [
+  { key: '1d', label: '1D' },
+  { key: '5d', label: '5D' },
+  { key: '1mo', label: '1Mo' },
+  { key: '3mo', label: '3Mo' },
+];
+
 const getTileColor = (pct) => {
   if (pct == null || !Number.isFinite(Number(pct))) return 'var(--bg-accent)';
   const i = Math.min(Math.abs(pct) / 4, 1);
@@ -153,6 +160,29 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
   const [detailIsEtf, setDetailIsEtf] = useState(true);
   const [chartData, setChartData] = useState(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const [chartInterval, setChartInterval] = useState('1d');
+
+  const loadChart = useCallback(async (ticker, period = '1d') => {
+    if (!ticker) return;
+    setChartLoading(true);
+    try {
+      const res = await axios.get(`${DATA_SERVICE}/chart/${ticker}?period=${period}&t=${Date.now()}`, { timeout: 20000 });
+      const rows = res.data?.rows || [];
+      setChartData(rows.length ? rows : null);
+    } catch (e) {
+      setChartData(null);
+    } finally {
+      setChartLoading(false);
+    }
+  }, []);
+
+  // Auto-load the chart when an item is selected (no manual "Load Chart" tap needed)
+  useEffect(() => {
+    if (selectedItem) {
+      setChartData(null);
+      loadChart(selectedItem.ticker, chartInterval);
+    }
+  }, [selectedItem, chartInterval, loadChart]);
 
   useEffect(() => {
     fetchMarketData();
@@ -716,33 +746,17 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
               {/* Chart Tab */}
               {detailTab === 'chart' && (
                 <div className="mobile-chart-container">
-                  <div className="mobile-chart-header">
-                    <button
-                      className="mobile-btn mobile-btn-sm mobile-btn-ghost"
-                      onClick={() => {
-                        if (chartData) {
-                          setChartData(null);
-                        } else {
-                          setChartLoading(true);
-                          const ticker = selectedItem.ticker;
-                          axios.get(`${DATA_SERVICE}/check/${ticker}`).then(checkRes => {
-                            if (checkRes.data.available && checkRes.data.files.length > 0) {
-                              const dailyFile = checkRes.data.files.find(f => f.includes('-1d-')) || checkRes.data.files[0];
-                              return axios.get(`${DATA_SERVICE}/data/${dailyFile}?t=${Date.now()}`);
-                            }
-                            return null;
-                          }).then(dataRes => {
-                            if (dataRes) {
-                              const parsed = Papa.parse(dataRes.data, { header: true, skipEmptyLines: true });
-                              setChartData(parsed.data);
-                            }
-                          }).catch(() => {}).finally(() => setChartLoading(false));
-                        }
-                      }}
-                      disabled={chartLoading}
-                    >
-                      {chartLoading ? <RefreshCw size={14} className="mobile-spinner" /> : chartData ? 'Hide Chart' : 'Load Chart'}
-                    </button>
+                  <div style={{ display: 'flex', gap: 6, padding: 'var(--mobile-spacing-sm) var(--mobile-spacing-md)', borderBottom: '1px solid var(--border-subtle)' }}>
+                    {CHART_INTERVALS.map(iv => (
+                      <button
+                        key={iv.key}
+                        className={`mobile-pill ${chartInterval === iv.key ? 'active' : ''}`}
+                        onClick={() => setChartInterval(iv.key)}
+                        style={{ fontSize: 'var(--mobile-text-xs)', padding: '4px 10px' }}
+                      >
+                        {iv.label}
+                      </button>
+                    ))}
                   </div>
                   <div className="mobile-chart-body">
                     {chartLoading && (
@@ -754,15 +768,16 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
                       <Suspense fallback={<div className="mobile-loading"><div className="mobile-spinner" /></div>}>
                         <ChartViewer
                           data={chartData}
-                          fileName={`${selectedItem.ticker}-chart`}
-                          height={300}
+                          fileName={`${selectedItem.ticker}-${chartInterval}-`}
+                          simple
+                          height={320}
                         />
                       </Suspense>
                     )}
                     {!chartLoading && !chartData && (
                       <div className="mobile-loading" style={{ height: '100%' }}>
                         <span style={{ fontSize: 'var(--mobile-text-sm)', color: 'var(--text-secondary)' }}>
-                          Tap "Load Chart" to view price history
+                          Could not load price data
                         </span>
                       </div>
                     )}

@@ -41,6 +41,19 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 });
 
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => {});
+    // When a freshly installed/updated service worker takes control, reload once
+    // so the page runs the newest bundle instead of a stale cached one.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (sessionStorage.getItem('trader_core_sw_updated') === 'yes') return;
+      sessionStorage.setItem('trader_core_sw_updated', 'yes');
+      window.location.reload();
+    });
+  });
+}
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <App />

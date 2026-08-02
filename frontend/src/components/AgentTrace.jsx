@@ -40,6 +40,7 @@ const cleanToolLabel = (label) => String(label || '').replace(/^🔧\s*/, '').re
 
 const AgentTrace = ({ steps = [], reasoning = '', commentary = [], isRunning = false, variant = 'web' }) => {
     const [isExpanded, setIsExpanded] = useState(false);
+    const [isCollapsed, setIsCollapsed] = useState(false);
     const [showAll, setShowAll] = useState(false);
     const [expandedToolKeys, setExpandedToolKeys] = useState({});
 
@@ -48,7 +49,19 @@ const AgentTrace = ({ steps = [], reasoning = '', commentary = [], isRunning = f
     const commentaryItems = (commentary || []).map(line => ({ _commentary: true, line }));
     const traceItems = [...compacted, ...commentaryItems];
     const hasReasoning = Boolean(reasoning);
-    const open = isRunning || isExpanded;
+    const open = isExpanded || (isRunning && !isCollapsed);
+
+    const toggleOpen = () => {
+        if (isRunning) {
+            setIsCollapsed(prev => {
+                const next = !prev;
+                if (!next) setIsExpanded(true);
+                return next;
+            });
+        } else {
+            setIsExpanded(prev => !prev);
+        }
+    };
     const PREVIEW = isRunning ? 8 : 5;
     const displayItems = showAll ? traceItems : traceItems.slice(-PREVIEW);
     const successCount = compacted.filter(s => s.status === 'success').length;
@@ -77,7 +90,7 @@ const AgentTrace = ({ steps = [], reasoning = '', commentary = [], isRunning = f
     return (
         <div style={{ marginBottom: '0.55rem' }}>
             <button
-                onClick={() => setIsExpanded(prev => !prev)}
+                onClick={toggleOpen}
                 style={{ width: '100%', display: 'flex', alignItems: 'center', gap: mobile ? 8 : '0.55rem', padding: mobile ? '0.35rem 0' : '0.42rem 0.1rem', background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', textAlign: 'left' }}
             >
                 <div style={{ width: mobile ? 20 : 22, height: mobile ? 20 : 22, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: isRunning ? 'rgba(59,130,246,0.14)' : 'rgba(255,255,255,0.06)', color: isRunning ? 'var(--brand-blue)' : 'rgba(255,255,255,0.58)', flexShrink: 0 }}>

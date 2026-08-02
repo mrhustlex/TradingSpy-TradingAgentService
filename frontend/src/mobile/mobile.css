@@ -24,6 +24,42 @@
   --mobile-text-lg: 1rem;
   --mobile-text-xl: 1.25rem;
   --mobile-text-2xl: 1.5rem;
+
+  /* Mobile Icon Sizes */
+  --mobile-icon-xs: 14px;
+  --mobile-icon-sm: 16px;
+  --mobile-icon-md: 18px;
+  --mobile-icon-lg: 20px;
+}
+
+/* Responsive scaling: tighten on small phones, loosen on large ones */
+@media (max-width: 370px) {
+  :root {
+    --mobile-touch-target: 40px;
+    --mobile-spacing-xs: 3px;
+    --mobile-spacing-sm: 6px;
+    --mobile-spacing-md: 12px;
+    --mobile-spacing-lg: 18px;
+    --mobile-spacing-xl: 24px;
+    --mobile-text-xs: 0.6rem;
+    --mobile-text-sm: 0.7rem;
+    --mobile-text-base: 0.8125rem;
+    --mobile-text-lg: 0.9375rem;
+    --mobile-text-xl: 1.125rem;
+    --mobile-text-2xl: 1.375rem;
+    --mobile-icon-xs: 12px;
+    --mobile-icon-sm: 14px;
+    --mobile-icon-md: 16px;
+    --mobile-icon-lg: 18px;
+  }
+}
+
+@media (min-width: 480px) and (max-width: 700px) {
+  :root {
+    --mobile-spacing-md: 20px;
+    --mobile-spacing-lg: 28px;
+    --mobile-text-base: 0.9375rem;
+  }
 }
 
 /* ========================================
@@ -371,6 +407,24 @@
   width: auto;
 }
 
+/* Round send/stop action button that scales with the touch-target token */
+.mobile-send-btn {
+  width: var(--mobile-touch-target);
+  height: var(--mobile-touch-target);
+  min-height: var(--mobile-touch-target);
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-send-btn svg {
+  width: var(--mobile-icon-md);
+  height: var(--mobile-icon-md);
+}
+
 /* ========================================
    Mobile Input Components
    ======================================== */
@@ -509,6 +563,8 @@
 .mobile-sheet {
   width: 100%;
   max-height: 90vh;
+  max-height: 90dvh;
+  min-height: 0;
   background: var(--bg-card);
   border-radius: 16px 16px 0 0;
   overflow: hidden;
@@ -545,8 +601,10 @@
 
 .mobile-sheet-content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--mobile-spacing-lg);
+  padding-bottom: calc(var(--mobile-spacing-lg) + var(--mobile-safe-area));
   -webkit-overflow-scrolling: touch;
 }
 
@@ -813,6 +871,6 @@
   }
   
   .mobile-sheet {
-    max-height: calc(90vh - env(safe-area-inset-bottom));
+    max-height: calc(90dvh - env(safe-area-inset-bottom));
   }
 }

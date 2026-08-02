@@ -632,6 +632,7 @@ class AIChatRequest(BaseModel):
     thinking_detail: Optional[str] = "normal"
     agent_instructions: Optional[str] = None
     max_tokens: Optional[int] = 8192
+    max_output_chars: Optional[int] = None
 
 class AgentIntentRequest(BaseModel):
     message: str
@@ -1207,7 +1208,29 @@ def normalize_model(provider: str, model: Optional[str]) -> str:
         }
         return aliases.get(m.lower(), m or "gemini-2.5-flash")
     if provider == "mistral":
-        return m or "mistral-large-latest"
+        if not m:
+            return "mistral-medium-latest"
+        low = m.lower()
+        known_mistral = {
+            "open-mistral-nemo", "mistral-small-latest", "mistral-medium-latest",
+            "mistral-large-latest", "codestral-latest", "devstral-medium-latest",
+            "devstral-medium-2411", "pixtral-large-latest", "open-mixtral-8x22b",
+            "open-mixtral-8x7b", "open-mistral-7b", "mistral-7b-instruct",
+        }
+        if low in known_mistral:
+            return m
+        # Map stale/unknown family variants to the current "latest" alias so a
+        # saved model id that Mistral no longer accepts (e.g. devstral-medium-2507)
+        # never 400s every request.
+        if "devstral" in low:
+            return "devstral-medium-latest"
+        if "codestral" in low:
+            return "codestral-latest"
+        if "pixtral" in low:
+            return "pixtral-large-latest"
+        if re.search(r"-?\d{4}\b", m):
+            return "mistral-medium-latest"
+        return m
     if provider == "groq":
         return m or "llama-3.1-8b-instant"
     if provider == "aws":
@@ -2361,6 +2384,125 @@ async def get_market_file(filename: str):
         return FileResponse(file_path, media_type=media_type, filename=filename)
     raise HTTPException(status_code=404, detail=f"File not found at {file_path}")
 
+
+def _chart_df_to_rows(df):
+    """Convert an OHLCV frame into plain dict rows ChartViewer can parse."""
+    if df is None or df.empty:
+        return []
+    rows = []
+    date_col = next((c for c in df.columns if str(c).strip().lower() in ("date", "datetime", "time", "timestamp")), None)
+    if date_col is None:
+        return []
+    for _, r in df.iterrows():
+        try:
+            ts = pd.Timestamp(r[date_col])
+            if pd.isna(ts):
+                continue
+            row = {
+                "Date": ts.strftime("%Y-%m-%d %H:%M"),
+                "Open": _safe_float(r.get("Open")),
+                "High": _safe_float(r.get("High")),
+                "Low": _safe_float(r.get("Low")),
+                "Close": _safe_float(r.get("Close")),
+                "Volume": _safe_float(r.get("Volume")) or 0,
+            }
+            if row["Open"] is None or row["Close"] is None:
+                continue
+            rows.append(row)
+        except Exception:
+            continue
+    return rows
+
+
+def _serve_chart_file(file_path, ticker, period, slice_by=None):
+    """Serve a local chart file as JSON rows, optionally sliced to a recent window."""
+    df = pd.read_csv(file_path)
+    if df.empty:
+        return {"source": "local", "ticker": ticker, "period": period, "rows": []}
+    if slice_by and "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).sort_values("Date")
+        end = df["Date"].max()
+        if slice_by == "ytd":
+            start = pd.Timestamp(end.year, 1, 1)
+        elif slice_by != "max":
+            start = end - pd.Timedelta(days=int(slice_by))
+        else:
+            start = None
+        if start is not None:
+            df = df[df["Date"] >= start]
+    return {"source": "local", "ticker": ticker, "period": period, "rows": _chart_df_to_rows(df)}
+
+
+def _fetch_live_chart(ticker, period, interval):
+    """Fetch OHLCV straight from yfinance without persisting to the local suite."""
+    import yfinance as yf
+    t = yf.Ticker(ticker)
+    data = t.history(period=period, interval=interval, auto_adjust=True)
+    if data is None or data.empty:
+        raise HTTPException(status_code=404, detail=f"No data available for {ticker} at {period}/{interval}")
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+    data.reset_index(inplace=True)
+    return {"source": "yfinance", "ticker": ticker, "period": period, "interval": interval, "rows": _chart_df_to_rows(data)}
+
+
+@app.get("/api/market-data/chart/{ticker}")
+async def get_chart_data(ticker: str, period: str = "1d"):
+    """Return OHLCV for a chart: prefer local downloaded files, slice daily files for
+    recent windows, and fall back to a one-off live yfinance fetch (no download needed)."""
+    user_id = LOCAL_USER_ID
+    _, _, user_dir = get_user_dirs(user_id)
+    ticker = ticker.upper()
+    period = (period or "1d").lower()
+
+    try:
+        files = sorted(f for f in os.listdir(user_dir) if f.upper().startswith(ticker + "-") and (f.endswith(".txt") or f.endswith(".csv")))
+    except OSError:
+        files = []
+
+    def find(needle):
+        return next((f for f in files if needle in f.lower()), None)
+
+    def serve_local(fname, slice_by=None):
+        file_path = resolve_safe_child_path(user_dir, fname)
+        return _serve_chart_file(file_path, ticker, period, slice_by=slice_by)
+
+    try:
+        if period == "1d":
+            # Prefer intraday files for a today view; else fetch live intraday
+            for needle in ("-1m-", "-5m-", "-15m-", "-30m-", "-60m-", "-1h-"):
+                f = find(needle)
+                if f:
+                    return serve_local(f)
+            return await asyncio.to_thread(_fetch_live_chart, ticker, "1d", "15m")
+
+        if period == "5d":
+            f = find("-5d-") or find("-1d-")
+            if f:
+                return serve_local(f, slice_by=6 if "-1d-" in f.lower() else None)
+            return await asyncio.to_thread(_fetch_live_chart, ticker, "5d", "1h")
+
+        daily_slices = {
+            "1mo": 31, "3mo": 92, "6mo": 184, "1y": 366, "ytd": "ytd", "max": "max",
+        }
+        if period in daily_slices:
+            f = find(f"-{period}-") or find("-1d-")
+            if f:
+                return serve_local(f, slice_by=daily_slices[period] if "-1d-" in f.lower() else None)
+            return await asyncio.to_thread(_fetch_live_chart, ticker, period, "1d")
+
+        # Unknown period: any matching local file, else live daily
+        f = find(f"-{period}-") or find("-1d-")
+        if f:
+            return serve_local(f)
+        return await asyncio.to_thread(_fetch_live_chart, ticker, "3mo", "1d")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("get_chart_data(%s, %s) failed: %s", ticker, period, exc)
+        raise HTTPException(status_code=404, detail=f"No price data for {ticker}")
+
 @app.get("/api/market-data/data/{filename}/meta")
 async def get_market_meta(filename: str):
     user_id = LOCAL_USER_ID
@@ -2420,6 +2562,10 @@ async def get_watchlist():
         "watched_tickers": items[0].get("tickers", []),
         "categories": items[0].get("categories", [])
     }
+
+@app.get("/api/market/status")
+async def market_status_endpoint():
+    return _us_market_status()
 
 @app.post("/api/market-data/watch")
 async def update_watchlist(new_tickers: List[str]):
@@ -7366,14 +7512,14 @@ async def chat_langgraph(request: AIChatRequest):
     try:
         settings = load_system_settings()
         provider = request.provider or normalize_app_llm_provider(settings.get("default_provider"))
-        model = request.model or settings.get("default_model") or "gemini-2.5-flash"
+        model = normalize_model(normalize_provider(provider), request.model or settings.get("default_model") or "gemini-2.5-flash")
         
         logger.info(f"=== Tool-Calling Chat Request ===")
         logger.info(f"Provider: {provider}, Model: {model}")
         
         # Inject current datetime into system prompt
         current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p %Z")
-        system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime))
+        system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime)).replace('{market_status}', _market_status_prompt_text())
         
         # Add thinking detail instructions based on user preference
         thinking_detail = getattr(request, 'thinking_detail', 'normal')
@@ -10534,22 +10680,168 @@ async def get_sync_status():
     return {"enabled": False, "jobs": [], "total_jobs": 0}
 
 
+# ── US Market Session Awareness ────────────────────────────────────────────────
+
+_NY_TZ = None
+def _ny_tz():
+    global _NY_TZ
+    if _NY_TZ is None:
+        from zoneinfo import ZoneInfo
+        _NY_TZ = ZoneInfo("America/New_York")
+    return _NY_TZ
+
+
+def _us_market_holidays(year: int):
+    """Set of date objects the NYSE/NASDAQ are closed, honoring observed-day rules."""
+    import calendar
+
+    def observed(d):
+        if d.weekday() == 5:  # Saturday -> Friday
+            return d - timedelta(days=1)
+        if d.weekday() == 6:  # Sunday -> Monday
+            return d + timedelta(days=1)
+        return d
+
+    def nth_weekday(y, m, wd, n):
+        first = datetime(y, m, 1).date()
+        offset = (wd - first.weekday()) % 7
+        return first + timedelta(days=offset + (n - 1) * 7)
+
+    def last_weekday(y, m, wd):
+        last = datetime(y, m, calendar.monthrange(y, m)[1]).date()
+        while last.weekday() != wd:
+            last -= timedelta(days=1)
+        return last
+
+    def easter_sunday(y):
+        a = y % 19
+        b, c = divmod(y, 100)
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return datetime(y, month, day).date()
+
+    return {
+        observed(datetime(year, 1, 1).date()),                   # New Year's Day
+        nth_weekday(year, 1, 0, 3),                              # MLK Day
+        nth_weekday(year, 2, 0, 3),                              # Presidents' Day
+        easter_sunday(year) - timedelta(days=2),                 # Good Friday
+        last_weekday(year, 5, 0),                                # Memorial Day
+        observed(datetime(year, 6, 19).date()),                  # Juneteenth
+        observed(datetime(year, 7, 4).date()),                   # Independence Day
+        nth_weekday(year, 9, 0, 1),                              # Labor Day
+        nth_weekday(year, 11, 3, 4),                             # Thanksgiving
+        observed(datetime(year, 12, 25).date()),                 # Christmas
+    }
+
+
+def _us_market_status(now_ny=None):
+    """Return a dict describing the current US equity market session."""
+    now_ny = now_ny or datetime.now(_ny_tz())
+    today = now_ny.date()
+    t = now_ny.time()
+
+    def at(h, m):
+        return datetime(2000, 1, 1, h, m).time()
+
+    if now_ny.weekday() >= 5 or today in _us_market_holidays(today.year) or t < at(4, 0):
+        phase = "CLOSED"
+    elif t < at(9, 30):
+        phase = "PRE-MARKET"
+    elif t <= at(16, 0):
+        phase = "OPEN"
+    elif t <= at(20, 0):
+        phase = "AFTER-HOURS"
+    else:
+        phase = "CLOSED"
+
+    def _next_open():
+        d = now_ny
+        for _ in range(21):
+            d = d + timedelta(days=1)
+            if d.weekday() < 5 and d.date() not in _us_market_holidays(d.year):
+                return d.replace(hour=9, minute=30, second=0, microsecond=0)
+        return now_ny + timedelta(days=1)
+
+    labels = {
+        "OPEN": "US market is OPEN (regular session 9:30 AM-4:00 PM ET). Prices/quotes are live.",
+        "PRE-MARKET": "US market is in PRE-MARKET (4:00-9:30 AM ET). Latest quotes are pre-market, not regular-session.",
+        "AFTER-HOURS": "US market is in AFTER-HOURS (4:00-8:00 PM ET). Latest quotes are extended-hours.",
+        "CLOSED": "US market is CLOSED. Latest quotes are from the last regular session.",
+    }
+    return {
+        "exchange": "US (NYSE/NASDAQ)",
+        "phase": phase,
+        "is_open": phase == "OPEN",
+        "now_et": now_ny.strftime("%A, %B %d, %Y at %I:%M %p ET"),
+        "label": labels[phase],
+        "next_open_et": _next_open().strftime("%A, %B %d, %Y at %I:%M %p ET"),
+        "timezone": "America/New_York",
+    }
+
+
+def _market_status_prompt_text() -> str:
+    st = _us_market_status()
+    return (
+        f"{st['label']} Current time {st['now_et']}. "
+        f"Next regular session opens {st['next_open_et']}."
+    )
+
+
 # ── Tool-Calling Chat Endpoint (Streaming) ────────────────────────────────────
 
-def _assistant_answer_budget(max_tokens):
-    """Map a requested max_tokens value to (budget, answer-depth instruction, tool-result truncation limit)."""
-    budget = max(512, min(int(max_tokens or 8192), 20000))
-    if budget <= 2500:
-        return budget, (
+def _assistant_answer_budget(max_tokens, max_output_chars=None):
+    """Map a requested max_tokens value to (token ceiling, answer-length instruction, tool-result truncation limit).
+
+    The returned ceiling is deliberately GENEROUS (>= 4096 tokens) and is only used as
+    an upper bound for the final-answer call so a small saved "max output" never hard-cuts
+    the text mid-sentence. Length is steered entirely by the instruction, which is the
+    whole point of the char target: the model decides where to stop.
+    max_output_chars (when positive) requests a target answer length in characters.
+    """
+    hint = max(512, min(int(max_tokens or 8192), 20000))
+
+    if max_output_chars and int(max_output_chars) > 0:
+        chars = int(max_output_chars)
+        # ~1.4 tokens/char comfortably covers English (~4 chars/token) and CJK
+        # (~1.5 chars/token) plus margin, but never below 4096.
+        ceiling = min(20000, max(4096, int(chars * 1.4) + 512))
+        if chars <= 1200:
+            instruction = (
+                f"ANSWER LENGTH: Terse. Keep the final answer to roughly {chars} characters - a single short "
+                "sentence or a compact 1-2 line takeaway. Do not pad; stop once the point is made."
+            )
+        elif chars <= 4000:
+            instruction = (
+                f"ANSWER LENGTH: Concise. Aim for about {chars} characters (a short paragraph or 2-4 bullets). "
+                "Prefer the highest-signal facts and a practical takeaway."
+            )
+        else:
+            instruction = (
+                f"ANSWER LENGTH: Moderate. Target roughly {chars} characters - a useful, structured answer with "
+                "key details and a takeaway, without bloating."
+            )
+        return ceiling, instruction, 800
+
+    if hint <= 2500:
+        return 4096, (
             "ANSWER BUDGET: Short. Final answers should be compact: 1 short paragraph or 3-5 bullets, "
             "only the highest-signal facts."
         ), 800
-    if budget <= 9000:
-        return budget, (
+    if hint <= 9000:
+        return 8192, (
             "ANSWER BUDGET: Mid. Final answers should be useful and structured: short summary, key details, "
             "and a practical takeaway when relevant."
         ), 2000
-    return budget, (
+    return 20000, (
         "ANSWER BUDGET: Long. Final answers should be materially more complete: organize with sections, "
         "cover the important evidence from tools, include caveats, and do not compress to one paragraph."
     ), 5000
@@ -10601,6 +10893,7 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
     from fastapi.responses import StreamingResponse
     from langchain_core.messages import HumanMessage, AIMessage
     from modules.tool_calling_agent import ALL_TOOLS, SYSTEM_PROMPT
+    from modules.orchestration_tools import invoke_tool
     from datetime import datetime
     import asyncio
     
@@ -10610,14 +10903,20 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
             settings = load_system_settings()
             provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
             model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
+            llm_config = {
+                "provider": provider,
+                "model": model,
+                "api_key": getattr(request, "api_key", None),
+                "provider_config": getattr(request, "provider_config", None),
+            }
             
             logger.info(f"=== ReAct + Parallel Tool-Calling Chat ===")
             logger.info(f"Provider: {provider}, Model: {model}")
             
             # Inject current datetime into system prompt
             current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p %Z")
-            system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime))
-            response_budget, answer_depth_instruction, tool_result_limit = _assistant_answer_budget(request.max_tokens)
+            system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime)).replace('{market_status}', _market_status_prompt_text())
+            response_budget, answer_depth_instruction, tool_result_limit = _assistant_answer_budget(request.max_tokens, request.max_output_chars)
             system_prompt_with_time += _unified_assistant_config_block(answer_depth_instruction)
             
             # Add thinking detail instructions based on user preference
@@ -10669,17 +10968,23 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
             except Exception as tool_select_error:
                 logger.warning(f"Tool selection failed or timed out; falling back to direct response: {tool_select_error}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'thinking', 'content': 'Tool selection did not return in time; answering directly...'})}\n\n"
-                response_text = await call_llm(
-                    provider=provider,
-                    model=model,
-                    system_prompt=system_prompt_with_time,
-                    user_prompt=request.message,
-                    api_key=api_key,
-                    provider_config=request.provider_config,
-                    json_mode=False,
-                    history=request.history or [],
-                    max_tokens=response_budget
-                )
+                try:
+                    response_text = await call_llm(
+                        provider=provider,
+                        model=model,
+                        system_prompt=system_prompt_with_time,
+                        user_prompt=request.message,
+                        api_key=api_key,
+                        provider_config=request.provider_config,
+                        json_mode=False,
+                        history=request.history or [],
+                        max_tokens=response_budget
+                    )
+                except Exception as fallback_error:
+                    logger.error(f"Direct response fallback failed: {fallback_error}", exc_info=True)
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'Assistant error: {fallback_error}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done', 'thinking': 'Fallback failed.', 'steps': [], 'tools_used': [], 'data': {}, 'triggered_tasks': []})}\n\n"
+                    return
                 response_text = _sanitize_assistant_response(response_text or "I am here, but the model returned an empty response.")
                 direct_step = {
                     "label": "Direct response fallback",
@@ -10738,7 +11043,7 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
                         if t.name == tool_name:
                             try:
                                 loop = asyncio.get_event_loop()
-                                result = await loop.run_in_executor(None, lambda: t.invoke(tool_input))
+                                result = await loop.run_in_executor(None, lambda: invoke_tool(t, tool_input, llm_config))
                                 
                                 return (tool_name, result, None, tool_key, tool_input)
                             except Exception as e:
@@ -11105,6 +11410,7 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
     from fastapi.responses import StreamingResponse
     from langchain_core.messages import HumanMessage, AIMessage
     from modules.tool_calling_agent import ALL_TOOLS, SYSTEM_PROMPT
+    from modules.orchestration_tools import invoke_tool
     from datetime import datetime
     import asyncio
     
@@ -11114,6 +11420,12 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
             settings = load_system_settings()
             provider = normalize_provider(request.provider or normalize_app_llm_provider(settings.get("default_provider")))
             model = normalize_model(provider, request.model or settings.get("default_model") or "gemini-2.5-flash")
+            llm_config = {
+                "provider": provider,
+                "model": model,
+                "api_key": getattr(request, "api_key", None),
+                "provider_config": getattr(request, "provider_config", None),
+            }
             
             logger.info(f"=== Strands Agent Loop ===")
             logger.info(f"Provider: {provider}, Model: {model}")
@@ -11130,12 +11442,12 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
             # Inject current datetime into system prompt
             from langchain_core.messages import SystemMessage
             current_datetime = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p %Z")
-            system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime))
+            system_prompt_with_time = SYSTEM_PROMPT.replace('{current_datetime}', str(current_datetime)).replace('{market_status}', _market_status_prompt_text())
 
             # Share the same assistant behavior/config as single-pass tool-calling mode so
             # workflows (market brief, fundamental screening, strategy create/backtest, etc.)
             # resolve identically no matter which mode the UI toggled to.
-            response_budget, answer_depth_instruction, tool_result_limit = _assistant_answer_budget(request.max_tokens)
+            response_budget, answer_depth_instruction, tool_result_limit = _assistant_answer_budget(request.max_tokens, request.max_output_chars)
             system_prompt_with_time += _unified_assistant_config_block(answer_depth_instruction)
             thinking_detail = getattr(request, 'thinking_detail', 'normal')
             if thinking_detail == 'brief':
@@ -11248,7 +11560,7 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                             if t.name == tool_name:
                                 try:
                                     loop = asyncio.get_event_loop()
-                                    result = await loop.run_in_executor(None, lambda: t.invoke(tool_input))
+                                    result = await loop.run_in_executor(None, lambda: invoke_tool(t, tool_input, llm_config))
                                     return (tool_name, tool_input, result, None, tool_call)
                                 except Exception as e:
                                     logger.error(f"Tool {tool_name} error: {e}")

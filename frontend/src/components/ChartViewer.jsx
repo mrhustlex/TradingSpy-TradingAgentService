@@ -264,7 +264,7 @@ const IndBlock = ({ id, label, color, ind, onToggle, onAdd, onRemove, onUpdate, 
 );
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onSwitch, externalStartDate, externalEndDate, height = 400, defaultShowIndicators = true }) => {
+const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onSwitch, externalStartDate, externalEndDate, height = 400, defaultShowIndicators = true, simple = false }) => {
     const chartContainerRef = useRef();
     const [localStartDate, setLocalStartDate] = useState(externalStartDate || '');
     const [localEndDate, setLocalEndDate] = useState(externalEndDate || '');
@@ -370,8 +370,8 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         if (localEndDate) uniqueData = uniqueData.filter(d => d.time <= new Date(localEndDate + 'T23:59:59').getTime() / 1000);
         if (uniqueData.length === 0) { chart.remove(); return; }
 
-        // Calculate trendlines from chart data
-        const trendlines = calculateTrendlines(uniqueData);
+        // Calculate trendlines from chart data (skipped in simple mode)
+        const trendlines = simple ? { support: null, resistance: null, supportCandidates: [], resistanceCandidates: [] } : calculateTrendlines(uniqueData);
         setCalculatedTrendlines(trendlines);
 
         // Pre-compute indicator lookup maps (time -> value) for tooltip
@@ -392,7 +392,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // S/R Lines
-        priceLines.forEach(line => {
+        if (!simple) priceLines.forEach(line => {
             const price = parseFloat(line.price);
             if (!isNaN(price) && price > 0 && line.visible) {
                 const meta = LINE_TYPE_META[line.type] || LINE_TYPE_META.custom;
@@ -402,7 +402,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
 
         // Auto-calculated trendlines with slope (shown only if showTrendlines enabled)
         // Show the best support/resistance trendlines
-        if (trendlines.support && annotationVisibility.showTrendlines) {
+        if (!simple && trendlines.support && annotationVisibility.showTrendlines) {
             const series = chart.addLineSeries({ 
                 color: '#10b98199', 
                 lineWidth: 2.5, 
@@ -413,7 +413,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
             });
             series.setData(trendlines.support.points);
         }
-        if (trendlines.resistance && annotationVisibility.showTrendlines) {
+        if (trendlines.resistance && annotationVisibility.showTrendlines && !simple) {
             const series = chart.addLineSeries({ 
                 color: '#f9731699', 
                 lineWidth: 2.5, 
@@ -426,7 +426,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // Show all candidate trendlines by default; hiddenCandidates holds ones user clicked to hide
-        if (annotationVisibility.showTrendlines) {
+        if (!simple && annotationVisibility.showTrendlines) {
             // Support candidates
             trendlines.supportCandidates?.forEach((candidate, idx) => {
                 const candKey = `sup_${idx}`;
@@ -460,7 +460,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // Deterministic setup annotations are kept separate from user lines.
-        if (autoAnnotate && tradeAnalysis?.available) {
+        if (!simple && autoAnnotate && tradeAnalysis?.available) {
             if (annotationVisibility.showLevels) {
                 [...(tradeAnalysis.levels?.supports || []), ...(tradeAnalysis.levels?.resistances || [])].forEach((level) => {
                     candle.createPriceLine({
@@ -482,7 +482,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // Fibonacci
-        if (fibEnabled && !isNaN(parseFloat(fibHigh)) && !isNaN(parseFloat(fibLow))) {
+        if (!simple && fibEnabled && !isNaN(parseFloat(fibHigh)) && !isNaN(parseFloat(fibLow))) {
             const H = parseFloat(fibDir === 'bull' ? fibHigh : fibLow), L = parseFloat(fibDir === 'bull' ? fibLow : fibHigh);
             FIB_LEVELS.forEach((level, idx) => {
                 const price = fibDir === 'bull' ? H - (H - L) * level : L + (H - L) * level;
@@ -582,7 +582,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
 
         // Click handler for drawing mode (uses ref to avoid chart rebuild)
         const clickHandler = (param) => {
-            if (!drawingModeRef.current || !param.time || !param.point || disposed) return;
+            if (simple || !drawingModeRef.current || !param.time || !param.point || disposed) return;
             const priceData = param.seriesPrices?.get(candle);
             const p = typeof priceData === 'object' && priceData !== null ? priceData.close : priceData;
             if (p == null) return;
@@ -602,7 +602,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
 
         // RSI sub-chart
         let rsiChart = null;
-        if (hasRSI) {
+        if (hasRSI && !simple) {
             const period = indicators.rsi.periods[0] || 14;
             const cont = document.createElement('div'); cont.style.width = '100%';
             chartContainerRef.current.appendChild(cont);
@@ -667,7 +667,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
             chart.remove();
             if (rsiChart) rsiChart.remove();
         };
-    }, [data, localStartDate, localEndDate, markers, indicators, priceLines, fibEnabled, fibHigh, fibLow, fibDir, height, autoAnnotate, tradeAnalysis, annotationVisibility, hiddenCandidates]);
+    }, [data, localStartDate, localEndDate, markers, indicators, priceLines, fibEnabled, fibHigh, fibLow, fibDir, height, autoAnnotate, tradeAnalysis, annotationVisibility, hiddenCandidates, simple]);
 
     // Sync drawingMode to ref so click handler always reads latest value
     useEffect(() => { drawingModeRef.current = drawingMode; }, [drawingMode]);
@@ -678,7 +678,16 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
     return (
         <div className="panel" style={{ position: 'relative', padding: 0, border: '1px solid rgba(59,130,246,0.25)' }}>
 
+            {/* ── Simple mode header (mobile) ── */}
+            {simple && (
+                <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(11,17,32,0.95)' }}>
+                    <span style={{ fontWeight: 800, fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--brand-blue)' }}>{currentInfo.ticker || 'Chart'}</span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>{currentInfo.interval || '—'} · {currentInfo.period || '—'}</span>
+                </div>
+            )}
+
             {/* ── Toolbar ── */}
+            {!simple && (
             <div style={{ padding: '0.55rem 1rem', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(11,17,32,0.95)', backdropFilter: 'blur(10px)', gap: '0.5rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                     <Filter size={15} color="var(--brand-blue)" />
@@ -729,9 +738,10 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                     {onClose && <button className="btn btn-ghost" onClick={onClose} style={{ height: '28px', padding: '0 0.65rem', fontSize: '0.73rem', borderColor: 'rgba(239,68,68,0.3)', color: 'var(--brand-red)' }}><X size={12} /> Close</button>}
                 </div>
             </div>
+            )}
 
             {/* ── TA Panel ── */}
-            {showIndicators && (
+            {!simple && showIndicators && (
                 <div style={{ background: 'rgba(8,14,26,0.95)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
                     <div style={{ display: 'flex', gap: '4px', padding: '6px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                         <button style={tabStyle(activeTab === 'indicators')} onClick={() => setActiveTab('indicators')}><Activity size={12} /> Indicators</button>
@@ -952,7 +962,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
 
             {/* ── Chart area + crosshair tooltip ── */}
             <div style={{ position: 'relative', minHeight: `${height}px` }}>
-                {drawingMode && (
+                {!simple && drawingMode && (
                     <div style={{ position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: 'rgba(16,185,129,0.9)', color: '#fff', padding: '4px 14px', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 'bold', pointerEvents: 'none' }}>
                         Drawing Mode — click on chart to place points (2 clicks = 1 line)
                     </div>
@@ -1025,14 +1035,16 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                     </div>
                 )}
             </div>
-            <TradeSetupChecklist
-                data={data}
-                interval={currentInfo.interval}
-                startDate={localStartDate}
-                endDate={localEndDate}
-                onAnalysisChange={onTradeAnalysisChange}
-                compact={height < 450}
-            />
+            {!simple && (
+                <TradeSetupChecklist
+                    data={data}
+                    interval={currentInfo.interval}
+                    startDate={localStartDate}
+                    endDate={localEndDate}
+                    onAnalysisChange={onTradeAnalysisChange}
+                    compact={height < 450}
+                />
+            )}
         </div>
     );
 };
