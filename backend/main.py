@@ -10564,7 +10564,7 @@ def _unified_assistant_config_block(answer_depth_instruction: str) -> str:
 UNIFIED ASSISTANT CONFIG:
 - You are the only assistant mode. Do not mention Advisor/Analyst/Agent modes.
 - Use ReAct internally: decide what is needed, call tools, observe results, then answer.
-- Parallelize independent read-only tools in the same turn whenever useful.
+- PARALLEL TOOL CALLS: You may select MULTIPLE tools in the SAME turn and they will execute concurrently, with all results returned together. When the data sources are independent (e.g., market overview + industry heatmap + news search; technicals/news for multiple tickers; fundamentals across a watchlist), select them ALL at once rather than one per turn. Never parallelize dependent calls (you need one result before building the next request), and do not batch long-running task tools (generate_strategy, run_backtest, download_market_data) with each other in the same turn.
 - While working, narrate your reasoning in 1-2 short sentences before calling tools (a brief agent monologue, e.g. "Let me pull the fundamentals first."). Keep it human-readable; never expose raw chain-of-thought or internal loop details.
 - Match the final response depth to the user's selected answer budget.
 - {answer_depth_instruction}
@@ -11399,33 +11399,29 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                 else:
                     # NO TOOLS SELECTED: LLM produced final response
                     
-                    # Stream the final response (non-stream invoke already returned full text)
+                    # Stream the final response token-by-token for a live reading experience.
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': '✍️ Writing your answer...'})}\n\n"
                     response_text = ""
-                    if hasattr(response, 'content') and response.content:
-                        response_text = str(response.content)
+                    try:
+                        final_llm = llm.bind(max_tokens=response_budget)
+                        for chunk in final_llm.stream(conversation_history):
+                            if hasattr(chunk, 'content') and chunk.content:
+                                response_text += chunk.content
+                                yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
+                    except Exception as stream_error:
+                        logger.warning(f"Strands final stream failed: {stream_error}")
+
+                    # Fallback if streaming produced nothing (provider dropped, no stream support)
+                    if not response_text:
+                        if hasattr(response, 'content') and response.content:
+                            response_text = str(response.content)
+                        else:
+                            response_text = (
+                                "The agent loop finished, but the model provider connection dropped while writing the final answer. "
+                                f"Completed {loop_iteration} loop iteration(s) with {len(set(tools_used_total))} data source(s). "
+                                "Please retry the same question, or switch provider/model if this keeps happening."
+                            )
                         yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
-                    else:
-                        # Try streaming from LLM
-                        try:
-                            final_llm = llm.bind(max_tokens=response_budget)
-                            for chunk in final_llm.stream(conversation_history):
-                                if hasattr(chunk, 'content') and chunk.content:
-                                    response_text += chunk.content
-                                    yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
-                        except Exception as stream_error:
-                            logger.warning(f"Strands final stream failed; retrying non-stream response: {stream_error}")
-                            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Provider stream dropped; retrying final answer without streaming...'})}\n\n"
-                            try:
-                                fallback_response = final_llm.invoke(conversation_history)
-                                response_text = _sanitize_assistant_response(getattr(fallback_response, "content", str(fallback_response)) or "")
-                            except Exception as fallback_error:
-                                logger.error(f"Strands final fallback failed: {fallback_error}", exc_info=True)
-                                response_text = (
-                                    "The agent loop finished, but the model provider connection dropped while writing the final answer. "
-                                    f"Completed {loop_iteration} loop iteration(s) with {len(set(tools_used_total))} data source(s). "
-                                    "Please retry the same question, or switch provider/model if this keeps happening."
-                                )
-                            yield f"data: {json.dumps({'type': 'response', 'content': response_text})}\n\n"
                     
                     # Exit loop: Final response generated
                     final_step = {
