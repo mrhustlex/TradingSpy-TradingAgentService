@@ -10051,18 +10051,7 @@ def _download_batch_locked(yf_module, batch_tickers, lock_acquire_timeout: float
     logger.warning("yf download lock busy; downloading batch without lock")
     return yf_module.download(batch_tickers, **kwargs)
 
-async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None, batch_size: int = 8, batch_timeout: float = 25.0) -> dict:
-    """Fetch price/change data for many tickers, one yfinance download at a time.
-
-    Concurrent heatmap/mover fan-out previously triggered parallel yfinance
-    downloads (via the lock-acquire timeout) that yfinance rate-limits, returning
-    null quotes that showed up as "unavailable" tiles. The semaphore serializes
-    the whole operation so each batch is downloaded by itself and succeeds.
-    """
-    async with _yf_bulk_semaphore:
-        return await _bulk_price_changes_serial(tickers, period, interval, extended, start, end, batch_size, batch_timeout)
-
-async def _bulk_price_changes_serial(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None, batch_size: int = 8, batch_timeout: float = 25.0) -> dict:
+async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None, batch_size: int = 8, batch_timeout: float = 60.0) -> dict:
     """Fetch price/change data for many tickers, downloading in small sequential batches.
 
     Splitting into batches keeps the yfinance calls short (fewer tickers per request),
@@ -10125,7 +10114,7 @@ async def _bulk_price_changes_serial(tickers: List[str], period: str = "1d", int
 
                 intraday, daily = await asyncio.wait_for(
                     loop.run_in_executor(None, lambda b=batch: download_intraday_and_daily(b)),
-                    timeout=batch_timeout + 10,
+                    timeout=batch_timeout + 20,
                 )
                 today_et = pd.Timestamp.now(tz="America/New_York").date()
                 for ticker in batch:
