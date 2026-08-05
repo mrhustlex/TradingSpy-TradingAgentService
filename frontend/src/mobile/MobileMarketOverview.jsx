@@ -533,11 +533,11 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
           >
             <div className="mobile-sheet-handle" />
             <div className="mobile-sheet-header">
-              <div>
-                <span className="mobile-sheet-title">{selectedItem.industry}</span>
-                <span style={{ fontSize: 'var(--mobile-text-xs)', color: 'var(--text-secondary)', marginLeft: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="mobile-sheet-title mobile-truncate">{selectedItem.industry}</div>
+                <div className="mobile-truncate" style={{ fontSize: 'var(--mobile-text-xs)', color: 'var(--text-secondary)', marginTop: 2 }}>
                   {selectedItem.ticker} · {selectedItem.sector}
-                </span>
+                </div>
               </div>
               <button className="mobile-header-btn" onClick={() => setSelectedItem(null)}>
                 <X size={20} />
@@ -545,7 +545,7 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
             </div>
 
             {/* Change badge */}
-            <div style={{ padding: '0 var(--mobile-p-md)', marginBottom: 'var(--mobile-spacing-sm)' }}>
+            <div style={{ padding: '0 var(--mobile-p-md)', marginBottom: 'var(--mobile-spacing-sm)', flexShrink: 0 }}>
               <div style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -571,7 +571,7 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
             </div>
 
             {/* Tabs */}
-            <div className="mobile-pills" style={{ padding: 0, margin: '0 var(--mobile-p-md) var(--mobile-spacing-sm)' }}>
+            <div className="mobile-pills" style={{ padding: 0, margin: '0 var(--mobile-p-md) var(--mobile-spacing-sm)', flexShrink: 0 }}>
               {detailIsEtf && (
                 <button
                   className={`mobile-pill ${detailTab === 'holdings' ? 'active' : ''}`}

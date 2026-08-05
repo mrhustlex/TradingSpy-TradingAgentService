@@ -491,14 +491,14 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // Volume
-        if (indicators.vol.enabled) {
+        if (!simple && indicators.vol.enabled) {
             const vs = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol_scale', color: '#334155' });
             chart.priceScale('vol_scale').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
             vs.setData(uniqueData.map(d => ({ time: d.time, value: d.volume, color: d.close >= d.open ? '#10b98155' : '#ef444455' })));
         }
 
         // SMA
-        if (indicators.sma.enabled) {
+        if (!simple && indicators.sma.enabled) {
             indicators.sma.periods.forEach((period, idx) => {
                 if (period < 2 || period >= uniqueData.length) return;
                 const d = calcSMA(uniqueData, period);
@@ -509,7 +509,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // EMA
-        if (indicators.ema.enabled) {
+        if (!simple && indicators.ema.enabled) {
             indicators.ema.periods.forEach((period, idx) => {
                 if (period < 2 || period >= uniqueData.length) return;
                 const d = calcEMA(uniqueData, period);
@@ -520,7 +520,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // Bollinger Bands
-        if (indicators.bb.enabled) {
+        if (!simple && indicators.bb.enabled) {
             const period = Math.max(2, indicators.bb.periods[0] || 20);
             if (uniqueData.length >= period) {
                 const { upper, mid, lower } = calcBB(uniqueData, period, 2);
@@ -535,7 +535,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
         }
 
         // VWAP
-        if (indicators.vwap.enabled) {
+        if (!simple && indicators.vwap.enabled) {
             const d = calcVWAP(uniqueData);
             if (d.length > 0) {
                 const m = {}; d.forEach(p => m[p.time] = p.value); indicatorMaps['VWAP'] = { map: m, color: '#ec4899' };
@@ -970,7 +970,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                 <div ref={chartContainerRef} style={{ width: '100%', minHeight: `${height}px`, cursor: drawingMode ? 'crosshair' : 'default' }} />
 
                 {/* Crosshair Tooltip Overlay */}
-                {tooltip && (
+                {tooltip && !simple && (
                     <div style={{
                         position: 'absolute', top: '10px', left: '10px', zIndex: 10, pointerEvents: 'none',
                         background: 'rgba(11,17,32,0.92)', backdropFilter: 'blur(12px)',

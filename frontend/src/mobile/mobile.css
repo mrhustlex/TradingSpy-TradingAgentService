@@ -613,6 +613,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  overscroll-behavior: none;
 }
 
 .mobile-sheet-handle {
@@ -635,6 +636,7 @@
   justify-content: space-between;
   padding: var(--mobile-spacing-md) var(--mobile-spacing-lg);
   border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 
 .mobile-sheet-title {
@@ -643,12 +645,13 @@
 }
 
 .mobile-sheet-content {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   padding: var(--mobile-spacing-lg);
-  padding-bottom: calc(var(--mobile-spacing-lg) + var(--mobile-safe-area));
+  padding-bottom: calc(var(--mobile-spacing-lg) + var(--mobile-safe-area) + 24px);
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 /* ========================================
