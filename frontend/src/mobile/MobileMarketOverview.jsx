@@ -10,7 +10,7 @@ import MobileSymbolSearch from './components/MobileSymbolSearch';
 
 const ChartViewer = lazy(() => import('../components/ChartViewer'));
 
-const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'SMH', 'IGV', 'FDN', 'CIBR', 'SKYY', 'ROBO', 'DRAM', 'XLF', 'KBE', 'KRE', 'KIE', 'XLV', 'XBI', 'IHI', 'IBB', 'PJP', 'XHS', 'XLE', 'OIH', 'XOP', 'URNM', 'UCO', 'ICLN', 'TAN', 'LIT', 'DRIV', 'XLY', 'XLP', 'XRT', 'PEJ', 'IBUY', 'FTCA', 'XLI', 'ITA', 'IYT', 'XHB', 'XLB', 'COPX', 'XLRE', 'RWR', 'VNQ', 'XLU', 'IDU', 'XLC', 'MJ', 'PHO', 'DBA'];
+const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'SMH', 'IGV', 'FDN', 'CIBR', 'SKYY', 'ROBO', 'DRAM', 'XLF', 'KBE', 'KRE', 'KIE', 'XLV', 'XBI', 'IHI', 'IBB', 'PJP', 'XHS', 'XLE', 'OIH', 'XOP', 'URNM', 'UCO', 'ICLN', 'TAN', 'LIT', 'DRIV', 'XLY', 'XLP', 'XRT', 'PEJ', 'EBIZ', 'FTCA', 'XLI', 'ITA', 'IYT', 'XHB', 'XLB', 'COPX', 'XLRE', 'RWR', 'VNQ', 'XLU', 'IDU', 'XLC', 'MJ', 'PHO', 'DBA'];
 
 const INDUSTRY_PROXY_META = {
     SPY: { name: 'S&P 500', sector: 'Broad Market', industry: 'Large Cap' },
@@ -48,7 +48,7 @@ const INDUSTRY_PROXY_META = {
     XLP: { name: 'Consumer Staples', sector: 'Consumer Defensive', industry: 'Broad Staples' },
     XRT: { name: 'Retail', sector: 'Consumer Cyclical', industry: 'Retail' },
     PEJ: { name: 'Leisure & Travel', sector: 'Consumer Cyclical', industry: 'Leisure' },
-    IBUY: { name: 'E-Commerce', sector: 'Consumer Cyclical', industry: 'E-Commerce' },
+    EBIZ: { name: 'E-Commerce', sector: 'Consumer Cyclical', industry: 'E-Commerce' },
     FTCA: { name: 'Food & Beverage', sector: 'Consumer Defensive', industry: 'Food & Bev' },
     XLI: { name: 'Industrial Select', sector: 'Industrials', industry: 'Broad Industrials' },
     ITA: { name: 'Aerospace & Defense', sector: 'Industrials', industry: 'Aerospace/Defense' },
@@ -224,6 +224,7 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
               price: q.price,
               change: q.change,
               change_percent: q.change_percent != null ? Number(q.change_percent) : null,
+              stale: Boolean(q.stale),
               sectorColor: SECTOR_COLORS[meta.sector] || '#444',
             };
           });
@@ -510,6 +511,11 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
               <span style={{ fontSize: 'var(--mobile-text-sm)', fontWeight: 600, color: 'rgba(255,255,255,0.9)', marginTop: 4 }}>
                 {formatPct(item.change_percent)}
               </span>
+              {item.stale && (
+                <span style={{ fontSize: '0.5rem', fontWeight: 700, color: 'rgba(255,255,255,0.6)', marginTop: 1, textTransform: 'uppercase' }}>
+                  stale
+                </span>
+              )}
             </button>
           ))}
         </div>

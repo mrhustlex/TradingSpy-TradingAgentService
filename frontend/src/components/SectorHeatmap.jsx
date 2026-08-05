@@ -13,7 +13,7 @@ const STOCK_BATCH_SIZE = 20;
 const STOCK_BATCH_CONCURRENCY = 4;
 const ETF_QUOTE_BATCH_SIZE = 8;
 const ETF_QUOTE_BATCH_CONCURRENCY = 3;
-const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'SMH', 'IGV', 'FDN', 'CIBR', 'SKYY', 'ROBO', 'DRAM', 'XLF', 'KBE', 'KRE', 'KIE', 'XLV', 'XBI', 'IHI', 'IBB', 'PJP', 'XHS', 'XLE', 'OIH', 'XOP', 'URNM', 'UCO', 'ICLN', 'TAN', 'LIT', 'DRIV', 'XLY', 'XLP', 'XRT', 'PEJ', 'IBUY', 'FTCA', 'XLI', 'ITA', 'IYT', 'XHB', 'XLB', 'COPX', 'XLRE', 'RWR', 'VNQ', 'XLU', 'IDU', 'XLC', 'MJ', 'PHO', 'DBA'];
+const INDUSTRY_PROXY_TICKERS = ['SPY', 'QQQ', 'IWM', 'DIA', 'XLK', 'SMH', 'IGV', 'FDN', 'CIBR', 'SKYY', 'ROBO', 'DRAM', 'XLF', 'KBE', 'KRE', 'KIE', 'XLV', 'XBI', 'IHI', 'IBB', 'PJP', 'XHS', 'XLE', 'OIH', 'XOP', 'URNM', 'UCO', 'ICLN', 'TAN', 'LIT', 'DRIV', 'XLY', 'XLP', 'XRT', 'PEJ', 'EBIZ', 'FTCA', 'XLI', 'ITA', 'IYT', 'XHB', 'XLB', 'COPX', 'XLRE', 'RWR', 'VNQ', 'XLU', 'IDU', 'XLC', 'MJ', 'PHO', 'DBA'];
 const INDUSTRY_PROXY_META = {
     SPY: { name: 'S&P 500', sector: 'Broad Market', industry: 'Large Cap' },
     QQQ: { name: 'NASDAQ 100', sector: 'Broad Market', industry: 'Tech/Growth' },
@@ -50,7 +50,7 @@ const INDUSTRY_PROXY_META = {
     XLP: { name: 'Consumer Staples', sector: 'Consumer Defensive', industry: 'Broad Staples' },
     XRT: { name: 'Retail', sector: 'Consumer Cyclical', industry: 'Retail' },
     PEJ: { name: 'Leisure & Travel', sector: 'Consumer Cyclical', industry: 'Leisure' },
-    IBUY: { name: 'E-Commerce', sector: 'Consumer Cyclical', industry: 'E-Commerce' },
+    EBIZ: { name: 'E-Commerce', sector: 'Consumer Cyclical', industry: 'E-Commerce' },
     FTCA: { name: 'Food & Beverage', sector: 'Consumer Defensive', industry: 'Food & Bev' },
     XLI: { name: 'Industrial Select', sector: 'Industrials', industry: 'Broad Industrials' },
     ITA: { name: 'Aerospace & Defense', sector: 'Industrials', industry: 'Aerospace/Defense' },
@@ -210,6 +210,7 @@ const buildIndustryProxySectors = (quotes = []) => {
             move_strength: quote.move_strength,
             avg_volume: quote.avg_volume,
             session: quote.session,
+            stale: Boolean(quote.stale),
         });
     }
     return sectors;
@@ -1073,6 +1074,11 @@ const SectorHeatmap = ({ notify, onBacktestTicker, onExplain }) => {
                                 <div style={{ fontSize: '0.75rem', fontWeight: 600, opacity: 0.9, marginTop: '2px', textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
                                     {formatPct(s.change_percent)}
                                 </div>
+                                {s.stale && (
+                                    <div title="No fresh data — showing last known move" style={{ fontSize: '0.5rem', fontWeight: 700, opacity: 0.75, marginTop: '1px', textTransform: 'uppercase', letterSpacing: '0.05em', textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
+                                        stale
+                                    </div>
+                                )}
                                 {isHovered && (
                                     <div style={{ fontSize: '0.6rem', opacity: 0.8, marginTop: '2px', textAlign: 'center', textShadow: '0 1px 3px rgba(0,0,0,0.4)' }}>
                                         <div>{s.isCustom ? 'Custom Group' : s.sector}</div>

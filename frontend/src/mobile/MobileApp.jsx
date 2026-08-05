@@ -9,6 +9,9 @@ import {
   Sun,
   Moon,
   Activity,
+  Download,
+  Smartphone,
+  X,
 } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import MobileMarketOverview from './MobileMarketOverview';
@@ -38,6 +41,13 @@ const MobileApp = () => {
   const [watchedTickers, setWatchedTickers] = useState([]);
   const [agentRuns, setAgentRuns] = useState([]);
   const [assistantPrompt, setAssistantPrompt] = useState(null);
+  const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [showIosHint, setShowIosHint] = useState(false);
+
+  const isStandalone =
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent || '');
 
   // Persist active tab
   useEffect(() => {
@@ -58,6 +68,43 @@ const MobileApp = () => {
       setNotifications(prev => prev.filter(n => n.id !== id));
     }, 3000);
   };
+
+  // PWA install support: Chrome/Android fires beforeinstallprompt; iOS needs manual steps.
+  useEffect(() => {
+    const onPrompt = (e) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+    const onInstalled = () => {
+      setDeferredPrompt(null);
+      setShowIosHint(false);
+      notify('TradingSpy installed. Open it from your home screen!', 'green');
+    };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      try {
+        deferredPrompt.prompt();
+        await deferredPrompt.userChoice;
+        setDeferredPrompt(null);
+      } catch (e) {
+        console.error(e);
+      }
+    } else if (isIOS) {
+      setShowIosHint(true);
+    } else {
+      setShowIosHint(true);
+    }
+  };
+
+  const showInstallButton = !isStandalone && (!!deferredPrompt || isIOS);
 
   // Fetch initial data
   useEffect(() => {
@@ -195,6 +242,16 @@ const MobileApp = () => {
           <span>Trading Spy</span>
         </div>
         <div className="mobile-header-actions">
+          {showInstallButton && (
+            <button
+              className="mobile-header-btn"
+              onClick={handleInstallClick}
+              title="Install app to hide the browser bar"
+              style={{ color: 'var(--brand-green)' }}
+            >
+              <Download size={20} />
+            </button>
+          )}
           <button
             className="mobile-header-btn"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -210,6 +267,19 @@ const MobileApp = () => {
           )}
         </div>
       </header>
+
+      {/* iOS add-to-home-screen hint */}
+      {showIosHint && !isStandalone && (
+        <div className="mobile-install-hint">
+          <Smartphone size={16} />
+          <span>
+            Tap the <b>Share</b> button in Safari, then choose <b>Add to Home Screen</b> to install TradingSpy and hide the browser bar.
+          </span>
+          <button className="mobile-install-hint-close" onClick={() => setShowIosHint(false)} title="Dismiss">
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Mobile Content */}
       <main className="mobile-content">

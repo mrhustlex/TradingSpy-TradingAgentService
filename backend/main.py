@@ -8547,6 +8547,7 @@ async def get_batch_price_changes(tickers: List[str], period: str = "1d", interv
             "move_strength": _safe_float(row.get("move_strength")),
             "avg_volume": _safe_float(row.get("avg_volume")),
             "session": row.get("session"),
+            "stale": bool(row.get("stale")),
         })
     payload = _sanitize_nan({
         "quotes": quotes,
@@ -9214,17 +9215,20 @@ _yf_download_lock = threading.Lock()
 YF_CACHE_TTL = 300  # seconds
 
 def _get_cached(key: str, ttl: int = None):
-    """Get cached value if still fresh."""
+    """Get cached value if still fresh. `ttl` overrides the value's stored TTL."""
     with _yf_cache_lock:
-        if key in _yf_cache:
-            ts, val = _yf_cache[key]
-            if time.time() - ts < (ttl or YF_CACHE_TTL):
-                return val
+        entry = _yf_cache.get(key)
+        if entry is None:
+            return None
+        ts, val = entry[0], entry[1]
+        store_ttl = entry[2] if len(entry) > 2 else YF_CACHE_TTL
+        if time.time() - ts < (ttl or store_ttl or YF_CACHE_TTL):
+            return val
     return None
 
-def _set_cache(key: str, value):
+def _set_cache(key: str, value, ttl: int = None):
     with _yf_cache_lock:
-        _yf_cache[key] = (time.time(), value)
+        _yf_cache[key] = (time.time(), value, ttl or YF_CACHE_TTL)
 
 def _locked_yf_download(yf_module, tickers, **kwargs):
     with _yf_download_lock:
@@ -9239,6 +9243,74 @@ def _fetch_with_retry(fetch_func, max_retries=2, base_delay=1.0):
         if attempt < max_retries - 1:
             delay = base_delay * (attempt + 1) + random.uniform(0, 0.5)
             time.sleep(delay)
+    return None
+
+# --- Dead-ticker tracking & stale-quote serving ---------------------------------
+# A symbol that returns no data YF_FAIL_THRESHOLD times inside YF_FAIL_WINDOW is
+# treated as "dead" (no data on Yahoo) and skipped by the bulk fetcher until the
+# TTL expires, so we stop burning yfinance quota on symbols that never resolve.
+# Last-good rows are kept per (symbol, period, interval) but are only *served*
+# within a short grace window (YF_STALE_TTL) — beyond that a row is not shown,
+# because a stale move would no longer match the live market.
+YF_DEAD_TICKER_TTL = 6 * 3600          # how long a proven-dead symbol stays skipped
+YF_FAIL_THRESHOLD = 3                  # consecutive-ish failures before marking dead
+YF_FAIL_WINDOW_TTL = 60 * 60           # window in which failures accumulate
+YF_LAST_GOOD_TTL = 24 * 3600           # how long a last-good row is retained
+YF_STALE_TTL = 10 * 60                 # how long a last-good row may be served stale
+
+def _ticker_is_dead(symbol: str) -> bool:
+    return _get_cached(f"dead:{symbol}", ttl=YF_DEAD_TICKER_TTL) is True
+
+def _mark_ticker_success(symbol: str) -> None:
+    with _yf_cache_lock:
+        _yf_cache.pop(f"failcount:{symbol}", None)
+        _yf_cache.pop(f"dead:{symbol}", None)
+
+def _mark_ticker_failure(symbol: str) -> None:
+    fails = _get_cached(f"failcount:{symbol}", ttl=YF_FAIL_WINDOW_TTL) or 0
+    fails += 1
+    if fails >= YF_FAIL_THRESHOLD:
+        _set_cache(f"dead:{symbol}", True, ttl=YF_DEAD_TICKER_TTL)
+        with _yf_cache_lock:
+            _yf_cache.pop(f"failcount:{symbol}", None)
+    else:
+        _set_cache(f"failcount:{symbol}", fails, ttl=YF_FAIL_WINDOW_TTL)
+
+def _last_good_cache_key(symbol: str, period: str, interval: str, extended: bool) -> str:
+    return f"lastgood:{symbol}:{period}:{interval or 'auto'}:ext={int(extended)}"
+
+def _cache_last_good(symbol: str, row, period: str, interval: str, extended: bool) -> None:
+    if not row or row.get("change_percent") is None:
+        return
+    try:
+        row["change_percent"] = float(row["change_percent"])
+    except (TypeError, ValueError):
+        return
+    _set_cache(_last_good_cache_key(symbol, period, interval, extended), row, ttl=YF_LAST_GOOD_TTL)
+
+def _stale_quote(symbol: str, period: str, interval: str, extended: bool, start: str = None, end: str = None):
+    """Serve the last good row tagged stale, but only within a short grace window.
+
+    Beyond YF_STALE_TTL the row is dropped so a stale move is never presented as
+    current market data. Date-range requests never reuse a cached move.
+    """
+    if start and end:
+        return None
+    cached = _get_cached(_last_good_cache_key(symbol, period, interval, extended), ttl=YF_STALE_TTL)
+    if not cached:
+        return None
+    row = dict(cached)
+    row["stale"] = True
+    return row
+
+def _holding_quote_fallback_with_retry(sym: str, period: str, interval: str = None, extended: bool = False, start: str = None, end: str = None, max_retries: int = 2, base_delay: float = 1.0):
+    """Fallback quote with exponential backoff; transient yfinance failures often resolve on retry."""
+    for attempt in range(max_retries + 1):
+        result = _holding_quote_fallback(sym, period, interval, extended, start=start, end=end)
+        if result:
+            return result
+        if attempt < max_retries:
+            time.sleep(base_delay * (attempt + 1) + random.uniform(0, 0.5))
     return None
 
 INDUSTRY_ETFS = {
@@ -9284,7 +9356,7 @@ INDUSTRY_ETFS = {
     "XLP": {"name": "Consumer Staples", "sector": "Consumer Defensive", "industry": "Broad Staples"},
     "XRT": {"name": "Retail", "sector": "Consumer Cyclical", "industry": "Retail"},
     "PEJ": {"name": "Leisure & Travel", "sector": "Consumer Cyclical", "industry": "Leisure"},
-    "IBUY": {"name": "E-Commerce", "sector": "Consumer Cyclical", "industry": "E-Commerce"},
+    "EBIZ": {"name": "E-Commerce", "sector": "Consumer Cyclical", "industry": "E-Commerce"},
     "FTCA": {"name": "Food & Beverage", "sector": "Consumer Defensive", "industry": "Food & Bev"},
     # Industrials
     "XLI": {"name": "Industrial Select", "sector": "Industrials", "industry": "Broad Industrials"},
@@ -9647,8 +9719,13 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
 
     Splitting into batches keeps the yfinance calls short (fewer tickers per request),
     a per-batch timeout prevents a hung download from blocking the whole request, and a
-    lock-acquire timeout keeps a stuck download from deadlocking every other batch. Any
-    ticker a batch fails to produce gets a light quote fallback so rows are rarely missing.
+    lock-acquire timeout keeps a stuck download from deadlocking every other batch.
+
+    Resilience behavior:
+    - Symbols proven to have no data (dead) are skipped to save yfinance quota.
+    - Tickers a batch fails to produce get a retry-with-backoff quote fallback.
+    - Missing tickers still serve their last good row tagged `stale` when available,
+      so rows rarely disappear from the UI after a transient failure.
     """
     import yfinance as yf
     loop = asyncio.get_event_loop()
@@ -9658,8 +9735,9 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
 
     use_date_range = bool(start and end)
     prices = {}
+    live_tickers = [t for t in clean_tickers if not _ticker_is_dead(t)]
 
-    for batch in _chunks(clean_tickers, max(2, int(batch_size))):
+    for batch in _chunks(live_tickers, max(2, int(batch_size))):
         try:
             if use_date_range:
                 kwargs = {"start": start, "end": end, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
@@ -9704,8 +9782,9 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                         intraday_frame = _extract_yf_ticker_frame(intraday, ticker)
                         daily_frame = _extract_yf_ticker_frame(daily, ticker)
                         latest = _last_valid_close(intraday_frame)
-                        today_open = _first_intraday_open(intraday_frame)
-                        baseline = today_open if today_open is not None else _previous_daily_close(daily_frame)
+                        baseline = _previous_daily_close(daily_frame)
+                        if baseline is None:
+                            baseline = _first_intraday_open(intraday_frame)
                         volume = None
                         if intraday_frame is not None and "Volume" in intraday_frame:
                             vol_vals = intraday_frame["Volume"].dropna().values
@@ -9732,19 +9811,38 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
         except Exception as e:
             logger.warning(f"_bulk_price_changes batch failed ({batch}): {e}")
 
+        for sym in batch:
+            if sym in prices:
+                _cache_last_good(sym, prices[sym], period, interval, extended)
+
         missing = [s for s in batch if s not in prices]
         if missing:
             tasks = [
                 loop.run_in_executor(
                     None,
-                    lambda s=s, p=period, iv=interval, ex=extended, st=start, en=end: _holding_quote_fallback(s, p, iv, ex, st=st, en=en),
+                    lambda s=s, p=period, iv=interval, ex=extended, st=start, en=end: _holding_quote_fallback_with_retry(s, p, iv, ex, st=st, en=en),
                 )
                 for s in missing
             ]
             fb_results = await asyncio.gather(*tasks, return_exceptions=True)
             for sym, r in zip(missing, fb_results):
-                if not isinstance(r, Exception) and r:
+                if isinstance(r, Exception) or not r:
+                    stale = _stale_quote(sym, period, interval, extended, start=start, end=end)
+                    if stale is not None:
+                        prices[sym] = stale
+                    else:
+                        _mark_ticker_failure(sym)
+                else:
+                    _mark_ticker_success(sym)
+                    _cache_last_good(sym, r, period, interval, extended)
                     prices[sym] = r
+
+    # Dead tickers were skipped upstream: surface their last good row when available.
+    for sym in clean_tickers:
+        if sym not in prices:
+            stale = _stale_quote(sym, period, interval, extended, start=start, end=end)
+            if stale is not None:
+                prices[sym] = stale
     return prices
 
 
