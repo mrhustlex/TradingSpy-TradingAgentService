@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { BACKTEST_SERVICE } from '../config';
+import useSheetResize from './useSheetResize';
 import renderMarkdown from '../utils/renderMarkdown';
 import { getApiSettings } from '../utils/apiKeyHelper';
 import { normalizeAssistantResponseText } from '../utils/assistantResponse';
@@ -90,6 +91,8 @@ const MobileAssistant = ({
   onAutoPromptConsumed,
   onAgentRunUpdate,
 }) => {
+  const { sheetHeight: threadSheetHeight, handleProps: threadHandleProps, sheetStyle: threadSheetStyle } = useSheetResize();
+  const { sheetHeight: apiSheetHeight, handleProps: apiHandleProps, sheetStyle: apiSheetStyle } = useSheetResize();
   const [threads, setThreads] = useState(() => {
     try {
       return loadThreads();
@@ -1110,12 +1113,13 @@ const MobileAssistant = ({
           <div className="mobile-sheet-overlay" onClick={() => setShowThreadList(false)}>
             <motion.div
               className="mobile-sheet"
+              style={threadSheetStyle}
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="mobile-sheet-handle" />
+              <div className="mobile-sheet-handle" {...threadHandleProps} />
               <div className="mobile-sheet-header">
                 <span className="mobile-sheet-title">Conversations</span>
                 <div style={{ display: 'flex', gap: 'var(--mobile-spacing-sm)' }}>
@@ -1174,12 +1178,13 @@ const MobileAssistant = ({
           <div className="mobile-sheet-overlay" onClick={() => setShowApiPanel(false)}>
             <motion.div
               className="mobile-sheet"
+              style={apiSheetStyle}
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="mobile-sheet-handle" />
+              <div className="mobile-sheet-handle" {...apiHandleProps} />
               <div className="mobile-sheet-header">
                 <span className="mobile-sheet-title">Assistant Settings</span>
                 <button className="mobile-header-btn" onClick={() => setShowApiPanel(false)}>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import axios from 'axios';
 import {
   RefreshCw,
@@ -16,6 +16,7 @@ import { INTELLIGENCE_SERVICE, DATA_SERVICE } from '../config';
 import MobileInsiderTrades from './components/MobileInsiderTrades';
 import MobileSignals from './components/MobileSignals';
 import MobileSymbolSearch from './components/MobileSymbolSearch';
+import useSheetResize from './useSheetResize';
 
 const ChartViewer = lazy(() => import('../components/ChartViewer'));
 
@@ -83,16 +84,16 @@ const MoverRow = ({ mover, color, onClick, signal, signalLoading }) => (
     style={{
       display: 'flex',
       alignItems: 'center',
-      padding: '7px 8px',
+      padding: '10px 10px',
       borderBottom: '1px solid rgba(255,255,255,0.05)',
       cursor: 'pointer',
-      gap: 4,
+      gap: 6,
     }}
   >
-    <div style={{ fontWeight: 700, fontSize: 'var(--mobile-text-xs)', width: 42, flexShrink: 0 }}>
+    <div style={{ fontWeight: 700, fontSize: 'var(--mobile-text-base)', width: 58, flexShrink: 0 }}>
       {mover.ticker}
     </div>
-    <div style={{ flex: 1, fontSize: '10px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+    <div style={{ flex: 1, fontSize: 'var(--mobile-text-sm)', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
       {mover.price != null ? formatPrice(mover.price) : '·'} · {formatVolume(mover.volume)} vol
       {signal && (
         <span style={{ marginLeft: 6 }}>
@@ -104,10 +105,10 @@ const MoverRow = ({ mover, color, onClick, signal, signalLoading }) => (
       )}
     </div>
     <div style={{
-      fontSize: 'var(--mobile-text-xs)',
+      fontSize: 'var(--mobile-text-base)',
       fontWeight: 700,
       color,
-      width: 54,
+      width: 64,
       textAlign: 'right',
       flexShrink: 0,
     }}>
@@ -137,6 +138,10 @@ const MobileMovements = ({ notify, onExplain }) => {
   const [chartData, setChartData] = useState(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartInterval, setChartInterval] = useState('1d');
+  const lastGoodMoversRef = useRef({ key: '', items: [] });
+
+  // Sheet pull-to-resize: drag the handle up/down to enlarge or shrink the sheet.
+  const { sheetHeight, handleProps, sheetStyle } = useSheetResize();
 
   const loadChart = useCallback(async (ticker, period = '1d') => {
     if (!ticker) return;
@@ -229,41 +234,87 @@ const MobileMovements = ({ notify, onExplain }) => {
       if (config.interval) params.set('interval', config.interval);
       if (extended) params.set('extended', 'true');
 
+      const fetchKey = `${window}:${universe}:${extended}`;
+      // Seed with the last successful rows for this exact window+universe so a
+      // flaky refresh never wipes previously-loaded movers.
+      const merged = new Map();
+      if (lastGoodMoversRef.current.key === fetchKey) {
+        for (const m of lastGoodMoversRef.current.items) merged.set(m.ticker.toUpperCase(), m);
+      }
+
       // Load in small batches with limited concurrency (mirrors the desktop view):
       // yfinance bulk downloads are flaky, so partial results are kept and rendered
       // progressively instead of failing the whole tab.
       const chunks = [];
       for (let i = 0; i < tickers.length; i += 8) chunks.push(tickers.slice(i, i + 8));
 
-      const merged = new Map();
+      const fetchChunk = async (chunk) => {
+        const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}`, chunk, { timeout: 60000 });
+        const data = (res.data.quotes || []).map(m => ({
+          ticker: m.symbol,
+          price: m.price,
+          change: m.change,
+          change_percent: m.change_percent,
+          volume: m.volume,
+          avg_volume: m.avg_volume,
+        }));
+        for (const m of data) {
+          if (m.ticker && m.change_percent != null) merged.set(m.ticker.toUpperCase(), m);
+        }
+        setMovers(Array.from(merged.values()));
+      };
+
       let cursor = 0;
       const loadNextChunk = async () => {
         while (cursor < chunks.length) {
           const chunk = chunks[cursor];
           cursor += 1;
           try {
-            const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}`, chunk, { timeout: 25000 });
-            const data = (res.data.quotes || []).map(m => ({
-              ticker: m.symbol,
-              price: m.price,
-              change: m.change,
-              change_percent: m.change_percent,
-              volume: m.volume,
-              avg_volume: m.avg_volume,
-            }));
-            for (const m of data) {
-              if (m.ticker && m.change_percent != null) merged.set(m.ticker.toUpperCase(), m);
-            }
-            setMovers(Array.from(merged.values()));
+            await fetchChunk(chunk);
           } catch (e) {
             console.warn('Movers chunk failed:', chunk, e);
+            // One retry with backoff: transient yfinance/network failures often
+            // resolve on the second attempt.
+            try {
+              await new Promise(r => setTimeout(r, 1200));
+              await fetchChunk(chunk);
+            } catch (e2) {
+              console.warn('Movers chunk retry failed:', chunk, e2);
+            }
           }
         }
       };
 
       await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, loadNextChunk));
-      setMovers(Array.from(merged.values()));
-      loadSignals(Array.from(merged.values()).map(m => m.ticker));
+
+      // Top-up pass: retry any ticker that still has no usable row so a transient
+      // batch failure can't leave permanent gaps in the list.
+      const stillMissing = tickers.filter(t => !merged.has(t.toUpperCase()));
+      if (stillMissing.length > 0) {
+        const missingChunks = [];
+        for (let i = 0; i < stillMissing.length; i += 8) missingChunks.push(stillMissing.slice(i, i + 8));
+        let mCursor = 0;
+        const loadMissing = async () => {
+          while (mCursor < missingChunks.length) {
+            const chunk = missingChunks[mCursor];
+            mCursor += 1;
+            try {
+              await fetchChunk(chunk);
+            } catch (e) {
+              console.warn('Movers top-up chunk failed:', chunk, e);
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(3, missingChunks.length) }, loadMissing));
+      }
+
+      const finalMovers = Array.from(merged.values());
+      setMovers(finalMovers);
+      lastGoodMoversRef.current = { key: fetchKey, items: finalMovers };
+      if (finalMovers.length < tickers.length) {
+        notify(`Loaded ${finalMovers.length}/${tickers.length} movers. yfinance may be rate-limited — refresh to retry the rest.`, 'yellow');
+      }
+      loadSignals(finalMovers.map(m => m.ticker));
     } catch (e) {
       console.error('Failed to fetch movers:', e);
       notify('Failed to load market movements', 'red');
@@ -429,6 +480,14 @@ const MobileMovements = ({ notify, onExplain }) => {
         </div>
       )}
 
+      {/* Updating with previously loaded rows still visible */}
+      {loading && movers.length > 0 && (
+        <div className="mobile-updating-bar">
+          <div className="mobile-spinner" />
+          <span>Updating movers · {movers.length} loaded</span>
+        </div>
+      )}
+
       {/* Empty */}
       {!loading && filtered.length === 0 && (
         <div className="mobile-loading">
@@ -437,27 +496,27 @@ const MobileMovements = ({ notify, onExplain }) => {
         </div>
       )}
 
-      {/* Gainers & Losers side by side */}
+      {/* Gainers & Losers stacked full-width for readability on narrow screens */}
       {!loading && activeTab === 'both' && filtered.length > 0 && (
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div>
           {/* Gainers */}
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div>
             <div style={{
-              fontSize: '10px',
+              fontSize: 'var(--mobile-text-sm)',
               fontWeight: 700,
               color: 'var(--brand-green)',
-              padding: '5px 8px',
+              padding: '6px 10px',
               borderBottom: '2px solid var(--brand-green)',
               display: 'flex',
               alignItems: 'center',
-              gap: 3,
+              gap: 4,
             }}>
-              <TrendingUp size={10} />
+              <TrendingUp size={12} />
               Gainers ({gainers.length})
             </div>
-            <div style={{ maxHeight: 'calc(100vh - 300px)', overflowY: 'auto' }}>
+            <div style={{ maxHeight: 'calc(100vh - 320px)', overflowY: 'auto' }}>
               {gainers.length === 0 && (
-                <div style={{ padding: '10px 8px', fontSize: '10px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                <div style={{ padding: '12px 10px', fontSize: 'var(--mobile-text-sm)', color: 'var(--text-secondary)', textAlign: 'center' }}>
                   None
                 </div>
               )}
@@ -475,23 +534,23 @@ const MobileMovements = ({ notify, onExplain }) => {
           </div>
 
           {/* Losers */}
-          <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ marginTop: 10 }}>
             <div style={{
-              fontSize: '10px',
+              fontSize: 'var(--mobile-text-sm)',
               fontWeight: 700,
               color: 'var(--brand-red)',
-              padding: '5px 8px',
+              padding: '6px 10px',
               borderBottom: '2px solid var(--brand-red)',
               display: 'flex',
               alignItems: 'center',
-              gap: 3,
+              gap: 4,
             }}>
-              <TrendingDown size={10} />
+              <TrendingDown size={12} />
               Losers ({losers.length})
             </div>
-            <div style={{ maxHeight: 'calc(100vh - 300px)', overflowY: 'auto' }}>
+            <div style={{ maxHeight: 'calc(100vh - 320px)', overflowY: 'auto' }}>
               {losers.length === 0 && (
-                <div style={{ padding: '10px 8px', fontSize: '10px', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                <div style={{ padding: '12px 10px', fontSize: 'var(--mobile-text-sm)', color: 'var(--text-secondary)', textAlign: 'center' }}>
                   None
                 </div>
               )}
@@ -641,12 +700,16 @@ const MobileMovements = ({ notify, onExplain }) => {
         <div className="mobile-sheet-overlay" onClick={() => setSelectedTicker(null)}>
           <motion.div
             className="mobile-sheet"
+            style={sheetStyle}
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mobile-sheet-handle" />
+            <div
+              className="mobile-sheet-handle"
+              {...handleProps}
+            />
             <div className="mobile-sheet-header">
               <div>
                 <span className="mobile-sheet-title">{selectedTicker}</span>

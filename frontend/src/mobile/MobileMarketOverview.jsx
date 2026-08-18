@@ -7,6 +7,7 @@ import { INTELLIGENCE_SERVICE, DATA_SERVICE } from '../config';
 import MobileInsiderTrades from './components/MobileInsiderTrades';
 import MobileSignals from './components/MobileSignals';
 import MobileSymbolSearch from './components/MobileSymbolSearch';
+import useSheetResize from './useSheetResize';
 
 const ChartViewer = lazy(() => import('../components/ChartViewer'));
 
@@ -139,6 +140,7 @@ const timeAgo = (iso) => {
 };
 
 const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
+  const { sheetHeight: detailSheetHeight, handleProps: detailHandleProps, sheetStyle: detailSheetStyle } = useSheetResize();
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(null);
@@ -211,7 +213,7 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
 
       const fetchBatch = async (batch) => {
         try {
-          const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}${ext}`, batch, { timeout: 25000 });
+          const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}${ext}`, batch, { timeout: 60000 });
           const quotes = res.data.quotes || [];
           const mapped = quotes.map(q => {
             const ticker = String(q.symbol || q.ticker || '').toUpperCase();
@@ -526,12 +528,13 @@ const MobileMarketOverview = ({ notify, onBacktestTicker, onExplain }) => {
         <div className="mobile-sheet-overlay" onClick={() => setSelectedItem(null)}>
           <motion.div
             className="mobile-sheet"
+            style={detailSheetStyle}
             initial={{ y: '100%' }}
             animate={{ y: 0 }}
             exit={{ y: '100%' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="mobile-sheet-handle" />
+            <div className="mobile-sheet-handle" {...detailHandleProps} />
             <div className="mobile-sheet-header">
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="mobile-sheet-title mobile-truncate">{selectedItem.industry}</div>

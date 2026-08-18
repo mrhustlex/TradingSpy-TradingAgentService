@@ -830,6 +830,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         const intent = typeof intentDecision === 'string' ? intentDecision : intentDecision?.intent;
         const isInsiderActivityRequest = /\binsider\s+(buy|buys|buying|sell|sells|selling|trade|trades|trading|activity|transactions?)\b/.test(l);
         if (isInsiderActivityRequest) return false;
+        if (/\bvcp\b|volatility contraction|cup and handle|bull flag|bear flag|pennant|double bottom|head and shoulders|expected pattern|chart pattern|find .* pattern/.test(l)) return false;
         if (typeof intentDecision === 'object' && intentDecision?.should_start_agent !== undefined) {
             return Boolean(intentDecision.should_start_agent);
         }
@@ -843,7 +844,7 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             l.includes('explaining market movers') ||
             l.includes('fresh news/web search')
         ) return false;
-        if (intent === 'strategy_generate' || intent === 'strategy_improve' || intent === 'create_strategy' || intent === 'backtest' || intent === 'optimize' || intent === 'download_data' || intent === 'data_task' || intent === 'fundamental_screen') return true;
+        if (intent === 'strategy_generate' || intent === 'strategy_improve' || intent === 'create_strategy' || intent === 'backtest' || intent === 'optimize' || intent === 'download_data' || intent === 'data_task') return true;
         return [
             'generate strategy',
             'create strategy',
@@ -856,12 +857,6 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
             'fresh data',
             'buy and hold',
             'buy-and-hold',
-            'undervalued stock',
-            'undervalued stocks',
-            'screen stocks',
-            'stock screen',
-            'peg below',
-            'price/sales',
         ].some(token => l.includes(token));
     };
 
@@ -870,8 +865,8 @@ const ChatBot = ({ files, strategies, onTrigger, notify, onRefreshStrats, onRefr
         const intent = typeof intentDecision === 'string' ? intentDecision : intentDecision?.intent;
         const isInsiderActivityRequest = /\binsider\s+(buy|buys|buying|sell|sells|selling|trade|trades|trading|activity|transactions?)\b/.test(l);
         if (isInsiderActivityRequest) return null;
+        if (/\bvcp\b|volatility contraction|cup and handle|bull flag|bear flag|pennant|double bottom|head and shoulders|expected pattern|chart pattern|find .* pattern/.test(l)) return null;
         if (typeof intentDecision === 'object' && intentDecision?.workflow) return intentDecision.workflow;
-        if (intent === 'fundamental_screen' || l.includes('undervalued stock') || l.includes('undervalued stocks') || l.includes('screen stocks') || l.includes('stock screen') || l.includes('peg below') || l.includes('price/sales')) return 'fundamental_screener';
         if (intent === 'optimize' || l.includes('improve') || l.includes('optimize')) return 'strategy_race';
         if (intent === 'backtest' || l.includes('backtest') || l.includes('buy and hold') || l.includes('buy-and-hold')) return 'strategy_race';
         if (intent === 'download_data' || intent === 'data_task' || l.includes('freshness') || l.includes('fresh data') || l.includes('download data')) return 'market_review';

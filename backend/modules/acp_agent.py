@@ -159,7 +159,7 @@ AGENTS = {
     ),
     "ui-assistant": AgentManifest(
         name="ui-assistant",
-        description="Run the same UI assistant runtime: general chat via /api/backtest/ai/chat-with-tools and explicit workflows via /api/agent/runs (market_review, strategy_create, strategy_race, fundamental_screener).",
+        description="Run the same UI assistant runtime: general chat via /api/backtest/ai/chat-with-tools and explicit workflows via /api/agent/runs (market_review, strategy_create, strategy_race).",
         input_content_types=["application/json", "text/plain"],
         output_content_types=["application/json"],
         metadata={

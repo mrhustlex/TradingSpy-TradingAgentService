@@ -698,6 +698,7 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
     const requestIdRef = useRef(0);
     const notifyRef = useRef(notify);
     const newsRequestKeyRef = useRef('');
+    const lastGoodMoversRef = useRef({ key: '', items: [] });
 
     useEffect(() => {
         notifyRef.current = notify;
@@ -862,9 +863,30 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
 
         const controller = externalController || new AbortController();
         const merged = new Map();
+        // Seed with the last successful rows for this exact window+universe so a
+        // flaky refresh never wipes previously-loaded movers; they get overwritten
+        // only when a fresh non-null value arrives.
+        if (lastGoodMoversRef.current.key === cacheKey) {
+            for (const item of lastGoodMoversRef.current.items) merged.set(item.ticker.toUpperCase(), item);
+        }
         let completedTickers = 0;
         let failedChunks = 0;
         const chunks = chunkArray(activeTickers, MOVEMENT_CHUNK_SIZE);
+        const fetchChunk = async (chunk) => {
+            const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}`, chunk, {
+                signal: controller.signal,
+                timeout: 60000,
+            });
+            if (requestIdRef.current !== requestId || controller.signal.aborted) return;
+            const items = (res.data.quotes || [])
+                .map((q, index) => quoteToEntry(q, chunk[index]))
+                .filter(item => item && item.change_percent != null);
+            for (const item of items) {
+                if (item.ticker) merged.set(item.ticker.toUpperCase(), item);
+            }
+            const partialEntries = Array.from(merged.values()).sort((a, b) => (b.change_percent ?? -Infinity) - (a.change_percent ?? -Infinity));
+            setEntries(partialEntries);
+        };
         try {
             setLoadingStage(currentWindow.interval ? `Fetching ${currentWindow.label} candles from yfinance` : 'Fetching latest prices from yfinance');
             let cursor = 0;
@@ -875,21 +897,18 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
                     if (requestIdRef.current !== requestId) return;
                     setLoadingStage(`${currentWindow.interval ? `Fetching ${currentWindow.label} candles` : 'Fetching latest prices'} · ${merged.size} usable · ${completedTickers}/${activeTickers.length} checked`);
                     try {
-                        const res = await axios.post(`${INTELLIGENCE_SERVICE}/batch-price-changes?${params}`, chunk, {
-                            signal: controller.signal,
-                            timeout: 15000,
-                        });
-                        if (requestIdRef.current !== requestId || controller.signal.aborted) return;
-                        const items = (res.data.quotes || [])
-                            .map((q, index) => quoteToEntry(q, chunk[index]))
-                            .filter(item => item && item.change_percent != null);
-                        for (const item of items) {
-                            if (item.ticker) merged.set(item.ticker.toUpperCase(), item);
-                        }
-                        const partialEntries = Array.from(merged.values()).sort((a, b) => (b.change_percent ?? -Infinity) - (a.change_percent ?? -Infinity));
-                        setEntries(partialEntries);
+                        await fetchChunk(chunk);
                     } catch (e) {
-                        if (!axios.isCancel(e)) failedChunks += 1;
+                        if (axios.isCancel(e)) return;
+                        failedChunks += 1;
+                        // One retry with backoff: transient yfinance/network failures
+                        // often resolve on the second attempt.
+                        try {
+                            await new Promise(r => setTimeout(r, 1200));
+                            await fetchChunk(chunk);
+                        } catch (e2) {
+                            if (!axios.isCancel(e2)) failedChunks += 1;
+                        }
                     } finally {
                         completedTickers += chunk.length;
                         if (requestIdRef.current === requestId && !controller.signal.aborted) {
@@ -902,14 +921,41 @@ const IndustryMovements = ({ notify, onExplain, onOpenChart }) => {
 
             await Promise.all(Array.from({ length: Math.min(MOVEMENT_CHUNK_CONCURRENCY, chunks.length) }, loadNextChunk));
             if (requestIdRef.current !== requestId || controller.signal.aborted) return;
+
+            // Top-up pass: retry any ticker that still has no usable row so a
+            // transient batch failure can't leave permanent gaps in the table.
+            const stillMissing = activeTickers.filter(t => !merged.has(t.toUpperCase()));
+            if (stillMissing.length > 0) {
+                setLoadingStage(`Fetching ${stillMissing.length} remaining tickers · ${merged.size} usable`);
+                const missingChunks = chunkArray(stillMissing, MOVEMENT_CHUNK_SIZE);
+                let mCursor = 0;
+                const loadMissing = async () => {
+                    while (mCursor < missingChunks.length && !controller.signal.aborted) {
+                        const chunk = missingChunks[mCursor];
+                        mCursor += 1;
+                        if (requestIdRef.current !== requestId) return;
+                        try {
+                            await fetchChunk(chunk);
+                        } catch (e) {
+                            if (!axios.isCancel(e)) failedChunks += 1;
+                        }
+                    }
+                };
+                await Promise.all(Array.from({ length: Math.min(MOVEMENT_CHUNK_CONCURRENCY, missingChunks.length) }, loadMissing));
+                if (requestIdRef.current !== requestId || controller.signal.aborted) return;
+            }
+
             const finalEntries = Array.from(merged.values()).sort((a, b) => (b.change_percent ?? -Infinity) - (a.change_percent ?? -Infinity));
             cachedMovements.set(cacheKey, { items: finalEntries, savedAt: Date.now() });
+            lastGoodMoversRef.current = { key: cacheKey, items: finalEntries };
             setEntries(finalEntries);
             setLoadedCount(finalEntries.length);
             if (finalEntries.length === 0 && failedChunks > 0) {
                 notifyRef.current?.('Movement price fetch timed out before any usable quotes loaded. Try fewer tickers or refresh.', 'yellow');
             } else if (finalEntries.length === 0) {
                 notifyRef.current?.('Movement prices returned no usable changes yet. Try another interval or refresh.', 'yellow');
+            } else if (finalEntries.length < activeTickers.length) {
+                notifyRef.current?.(`Loaded ${finalEntries.length}/${activeTickers.length} movers. Retried the missing ones; yfinance may be rate-limited.`, 'yellow');
             }
         } catch (e) {
             if (!axios.isCancel(e)) {

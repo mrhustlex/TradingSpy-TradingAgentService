@@ -706,6 +706,25 @@ class ExpectedPatternScenarioRequest(BaseModel):
     model: Optional[str] = None
     include_analysis: bool = True
 
+class FundamentalScreenRequest(BaseModel):
+    universe: str = "default"
+    requirements: str = "undervalued fundamentals with positive growth and profitability"
+    max_results: int = 5
+    max_checked: int = 30
+    include_insiders: bool = False
+    include_news: bool = True
+    include_options: bool = True
+    include_market_context: bool = True
+
+class PatternScanRequest(BaseModel):
+    universe: Optional[str] = None
+    tickers: Optional[List[str]] = None
+    interval: str = "1d"
+    patterns: Optional[List[str]] = ["vcp", "cup_handle", "bull_flag"]
+    min_score: float = 55.0
+    max_results: int = 25
+    period: Optional[str] = None
+
 class SignalWatchRequest(BaseModel):
     tickers: List[str]
     direction: str = "either"  # up | down | either
@@ -3209,7 +3228,7 @@ This is not financial advice."""
 
 
 async def _run_fundamental_screener_agent(run_id: str, request: AgentRunRequest):
-    from modules.tool_calling_agent import screen_undervalued_stocks
+    from modules.tool_calling_agent import screen_undervalued_compute
 
     prompt = request.prompt or request.screen_requirements or "Find fundamentally undervalued stocks with positive growth and profitability."
     universe = request.screen_universe or _infer_screen_universe_from_prompt(prompt)
@@ -3274,16 +3293,7 @@ async def _run_fundamental_screener_agent(run_id: str, request: AgentRunRequest)
     _set_agent_plan_step(run_id, "screen_candidates", "running", f"Screening up to {max_checked} symbol(s)")
     _update_agent_run(run_id, progress=35, current_step=f"Screening {universe} fundamentals")
     _append_agent_event(run_id, "screen_progress", f"Calling fundamental screener for {universe}", universe=universe, max_checked=max_checked)
-    screen_result = _sanitize_nan(await asyncio.to_thread(screen_undervalued_stocks.invoke, {
-        "universe": universe,
-        "requirements": requirements,
-        "max_results": max_results,
-        "max_checked": max_checked,
-        "include_insiders": True,
-        "include_news": True,
-        "include_options": True,
-        "include_market_context": True,
-    }))
+    screen_result = _sanitize_nan(await asyncio.to_thread(screen_undervalued_compute, universe=universe, requirements=requirements, max_results=max_results, max_checked=max_checked, include_insiders=True, include_news=True, include_options=True, include_market_context=True))
 
     candidates = screen_result.get("candidates") or []
     raw_checked = screen_result.get("checked_count", screen_result.get("checked"))
@@ -3578,6 +3588,8 @@ def _public_tool_label(tool_name: str) -> str:
         "generate_strategy": "strategy generation",
         "run_backtest": "backtest",
         "download_market_data": "data download",
+        "screen_undervalued_stocks": "fundamental screen",
+        "scan_chart_patterns": "pattern scan",
         "check_task_status": "task status",
     }
     return labels.get(tool_name or "", (tool_name or "data source").replace("_", " "))
@@ -4622,6 +4634,29 @@ Repair requirements:
         _append_agent_event(run_id, "error", str(e))
 
 
+_TECHNICAL_PATTERN_TERMS = (
+    "vcp", "volatility contraction",
+    "cup and handle", "cup-with-handle", "cup & handle", "cup with handle",
+    "bull flag", "bullish flag", "bear flag", "bearish flag",
+    "pennant", "bullish pennant", "double bottom", "double top",
+    "head and shoulders", "rounding bottom", "base breakout", "breakout setup",
+    "continuation pattern", "reversal pattern", "chart pattern",
+    "expected pattern", "expected_pattern",
+    "scan for pattern", "find pattern", "pattern scan", "scan patterns",
+)
+
+
+def _is_technical_pattern_scan(text: str) -> bool:
+    """True when the request is about scanning stocks for technical chart
+    patterns (VCP, flags, bases, expected patterns), which the chat tool loop
+    handles via scan_bullish_patterns/generate_expected_pattern instead of the
+    fundamental screener workflow."""
+    if not text:
+        return False
+    lc = text.lower()
+    return any(term in lc for term in _TECHNICAL_PATTERN_TERMS)
+
+
 def _fallback_agent_intent(message: str) -> Dict[str, Any]:
     text = (message or "").lower()
     explain_terms = ("explain", "what does", "how does", "review", "walk me through", "strategy code")
@@ -4632,12 +4667,16 @@ def _fallback_agent_intent(message: str) -> Dict[str, Any]:
     screen_terms = ("undervalued", "undervalue", "under value", "fundamental screen", "screen stocks", "screen stock", "stock screen", "find stocks", "find stock", "cheap stocks", "cheap stock", "value stocks", "value stock")
     insider_terms = ("insider buy", "insider buys", "insider buying", "insider sell", "insider sells", "insider selling", "insider trade", "insider trades", "insider trading", "insider activity", "insider transactions")
 
+    if _is_technical_pattern_scan(text):
+        return {"intent": "market_analysis", "workflow": None, "should_start_agent": False, "confidence": 0.6}
     if any(term in text for term in explain_terms):
         return {"intent": "strategy_explain", "workflow": None, "should_start_agent": False, "confidence": 0.6}
     if any(term in text for term in insider_terms):
         return {"intent": "market_analysis", "workflow": None, "should_start_agent": False, "confidence": 0.72}
     if any(term in text for term in screen_terms) and any(term in text for term in ["stock", "stocks", "company", "companies", "fundamental", "fundamentals", "peg", "price/sales", "p/s", "margin"]):
-        return {"intent": "fundamental_screen", "workflow": "fundamental_screener", "should_start_agent": True, "confidence": 0.62}
+        # Fundamental screens run as an async task in the normal chat tool loop
+        # (screen_undervalued_stocks returns a task_id), not as a background agent run.
+        return {"intent": "market_analysis", "workflow": None, "should_start_agent": False, "confidence": 0.62}
     if any(term in text for term in data_terms):
         return {"intent": "data_task", "workflow": "market_review", "should_start_agent": True, "confidence": 0.55}
     if any(term in text for term in improve_terms):
@@ -4671,8 +4710,7 @@ async def classify_agent_intent(request: AgentIntentRequest):
 
 Allowed intents:
 - chat: normal conversation or clarification
-- market_analysis: news, technicals, fundamentals, market/sector/industry questions
-- fundamental_screen: screen many stocks for valuation/fundamental candidates
+- market_analysis: news, technicals, fundamentals, market/sector/industry questions, and fundamental stock screens
 - strategy_explain: explain/review/show a saved strategy/code/result; read-only
 - strategy_generate: create/find/generate a new strategy and backtest it
 - strategy_improve: improve/optimize/beat a benchmark or previous strategy
@@ -4682,8 +4720,9 @@ Allowed intents:
 Rules:
 - If the user says explain, what does, how does, review, show code, or asks about "Strategy Code: X", choose strategy_explain and should_start_agent=false.
 - If the user asks for insider buys/sells/trades/activity/transactions, choose market_analysis and should_start_agent=false. The normal chat tool layer will call insider tools.
-- Choose fundamental_screen when the user asks to find/screen undervalued/value/cheap stocks or asks for PEG, P/E, price/sales, revenue growth, margins, options, or news across a universe of stocks. Use workflow=fundamental_screener.
-- Do not require a single ticker for fundamental_screen.
+- Choose market_analysis with should_start_agent=false when the user asks to find/screen undervalued/value/cheap stocks or asks for PEG, P/E, price/sales, revenue growth, margins, options, or news across a universe of stocks. The normal chat tool layer runs the fundamental screen as an async task via screen_undervalued_stocks.
+- Do NOT choose a background-agent workflow for technical chart-pattern scans (VCP, volatility contraction, cup and handle, bull/bear flags, bases, breakouts, expected patterns). Those belong to market_analysis with should_start_agent=false so the normal chat tool layer scans them.
+- Do not require a single ticker for market_analysis stock screens.
 - Only choose strategy_generate/strategy_improve/backtest when the user asks to run work, test, generate, improve, optimize, or beat a benchmark.
 - Do not start a generation/backtest workflow just because the message contains the word strategy.
 - Use recent history to resolve references like "this", "last one", or "accepted strategy".
@@ -4694,7 +4733,7 @@ Rules:
 - A request like "Generate a QQQ strategy using 5m extended-hours data: if premarket is up 2% on high volume, enter after open and exit before close" is a complete strategy_generate request: workflow=strategy_create, should_start_agent=true, ticker=QQQ, needs_clarification=false.
 
 JSON shape:
-{"intent":"...", "workflow":null|"strategy_create"|"strategy_race"|"market_review"|"fundamental_screener", "should_start_agent":true|false, "ticker":null|string, "strategy_name":null|string, "needs_clarification":false, "continues_pending":false, "confidence":0.0, "reason":"short user-visible reason"}"""
+{"intent":"...", "workflow":null|"strategy_create"|"strategy_race"|"market_review", "should_start_agent":true|false, "ticker":null|string, "strategy_name":null|string, "needs_clarification":false, "continues_pending":false, "confidence":0.0, "reason":"short user-visible reason"}"""
     user_prompt = json.dumps({
         "message": request.message,
         "recent_history": recent_history,
@@ -4727,10 +4766,23 @@ JSON shape:
         intent = "market_analysis"
         decision["should_start_agent"] = False
         decision["workflow"] = None
+    if _is_technical_pattern_scan(message_lc):
+        # Technical pattern scans (VCP, cup & handle, bull flags, etc.) are
+        # handled by the normal chat tool loop (scan_bullish_patterns /
+        # generate_expected_pattern), never by the fundamental screener.
+        intent = "market_analysis"
+        decision["should_start_agent"] = False
+        decision["workflow"] = None
     if intent == "create_strategy":
         intent = "strategy_generate"
     if intent == "optimize":
         intent = "strategy_improve"
+    if intent == "fundamental_screen":
+        # Fundamental screens run as an async task in the chat tool loop
+        # (screen_undervalued_stocks returns a task_id), never as a background run.
+        intent = "market_analysis"
+        decision["should_start_agent"] = False
+        decision["workflow"] = None
     decision["continues_pending"] = bool(decision.get("continues_pending"))
     if intent in {"strategy_explain", "market_analysis", "chat"}:
         decision["should_start_agent"] = False
@@ -4744,9 +4796,6 @@ JSON shape:
     elif intent == "data_task":
         decision["should_start_agent"] = True
         decision["workflow"] = decision.get("workflow") or "market_review"
-    elif intent == "fundamental_screen":
-        decision["should_start_agent"] = True
-        decision["workflow"] = "fundamental_screener"
     decision["intent"] = intent
     return _sanitize_nan(decision)
 
@@ -4971,18 +5020,12 @@ _A2A_SKILLS = [
         "name": "Strategy Race",
         "description": "Iterate strategy generation + backtesting until a benchmark is beaten.",
     },
-    {
-        "id": "fundamental-screener",
-        "name": "Fundamental Screener",
-        "description": "Screen a universe of stocks for valuation/growth/profitability candidates.",
-    },
 ]
 
 _A2A_WORKFLOW_BY_SKILL = {
     "market-review": "market_review",
     "strategy-create": "strategy_create",
     "strategy-race": "strategy_race",
-    "fundamental-screener": "fundamental_screener",
 }
 
 def _a2a_skill_id(body: Dict[str, Any]) -> Optional[str]:
@@ -8461,6 +8504,208 @@ Do not claim certainty, use outside/current information, invent news, or output 
     )
     return baseline
 
+
+async def _run_fundamental_screen_task(task_id: str, request: FundamentalScreenRequest):
+    """Run the fundamental screen in the background, storing progress in results_store."""
+    from modules.tool_calling_agent import screen_undervalued_compute
+
+    try:
+        update_task_state(task_id, status="running", progress=5, current="Resolving universe and requirements")
+        max_checked = max(request.max_results, min(int(request.max_checked or 30), 80))
+        result = await asyncio.to_thread(
+            screen_undervalued_compute,
+            universe=request.universe,
+            requirements=request.requirements,
+            max_results=max(1, min(int(request.max_results or 5), 10)),
+            max_checked=max_checked,
+            include_insiders=bool(request.include_insiders),
+            include_news=bool(request.include_news),
+            include_options=bool(request.include_options),
+            include_market_context=bool(request.include_market_context),
+        )
+        result = _sanitize_nan(result)
+        update_task_state(
+            task_id,
+            status="completed",
+            progress=100,
+            current="Screen complete",
+            results=result,
+        )
+    except Exception as exc:
+        logger.error(f"Fundamental screen task {task_id} failed: {exc}", exc_info=True)
+        update_task_state(task_id, status="failed", error=str(exc), current=f"Failed: {exc}")
+
+
+@app.post("/api/intelligence/screen")
+async def start_fundamental_screen(request: FundamentalScreenRequest, background_tasks: BackgroundTasks):
+    """Start a fundamental screen as an async background task, returning a task_id."""
+    task_id = f"SCREEN_{uuid.uuid4().hex[:10].upper()}"
+    init_task_state(task_id, {
+        "status": "running",
+        "progress": 0,
+        "current": "Queued",
+        "request": request.dict(),
+        "created_at": datetime.now().isoformat(),
+    })
+    background_tasks.add_task(_run_fundamental_screen_task, task_id, request)
+    return {"task_id": task_id, "status": "running"}
+
+
+def _resolve_pattern_scan_tickers(request: PatternScanRequest) -> List[str]:
+    from modules.pattern_scanner import UNIVERSE_PRESETS
+
+    if request.tickers:
+        return [str(t).strip().upper() for t in request.tickers if str(t).strip()]
+    if request.universe:
+        key = request.universe.lower().replace(" ", "").replace("-", "")
+        if key in UNIVERSE_PRESETS:
+            return UNIVERSE_PRESETS[key]
+    return list(UNIVERSE_PRESETS.get("indices", ["SPY", "QQQ", "DIA", "IWM", "VTI"]))
+
+
+def _pattern_scan_candles(frame, max_bars: int = 180):
+    """Convert a yfinance OHLCV frame into a compact candle list for charting."""
+    tail = frame.tail(max_bars)
+    candles = []
+    for ts, row in tail.iterrows():
+        try:
+            time_val = int(ts.timestamp())
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            continue
+        candles.append({
+            "time": time_val,
+            "open": round(float(row["Open"]), 4),
+            "high": round(float(row["High"]), 4),
+            "low": round(float(row["Low"]), 4),
+            "close": round(float(row["Close"]), 4),
+            "volume": int(float(row["Volume"])) if "Volume" in row and row["Volume"] == row["Volume"] else 0,
+        })
+    return candles
+
+
+def _pattern_marker(marker: dict, frame):
+    """Translate a detector marker (index-relative to frame) into a chart marker."""
+    idx = int(marker.get("index", -1))
+    if idx < 0 or idx >= len(frame):
+        return None
+    try:
+        time_val = int(frame.index[idx].timestamp())
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    return {
+        "time": time_val,
+        "position": marker.get("position", "belowBar"),
+        "color": marker.get("color", "#eab308"),
+        "shape": "circle",
+        "text": marker.get("label", ""),
+    }
+
+
+async def _run_pattern_scan_task(task_id: str, request: PatternScanRequest):
+    """Scan a universe for technical chart patterns in the background."""
+    from modules.pattern_detector import detect_all
+
+    try:
+        tickers = _resolve_pattern_scan_tickers(request)
+        max_results = max(1, min(int(request.max_results or 25), 50))
+        min_score = max(0.0, min(float(request.min_score or 55.0), 100.0))
+        patterns = [p for p in (request.patterns or []) if isinstance(p, str) and p]
+        interval = str(request.interval or "1d").strip().lower()
+        period = str(request.period or "1y")
+        periods = {
+            "1m": "7d", "5m": "60d", "15m": "60d", "30m": "60d",
+            "1h": "2y", "1d": "2y", "1wk": "5y",
+        }
+        effective_period = periods.get(interval, period)
+
+        total = len(tickers)
+        matches = []
+        for index, ticker in enumerate(tickers, start=1):
+            progress = int(10 + (index / total) * 80) if total else 10
+            update_task_state(task_id, progress=progress, current=f"Scanning {ticker} ({index}/{total})")
+            try:
+                import yfinance as yf
+
+                frame = await asyncio.to_thread(
+                    lambda: yf.Ticker(ticker).history(
+                        period=effective_period, interval=interval, prepost=False, auto_adjust=False
+                    ).dropna(subset=["Close"])
+                )
+                if frame is None or len(frame) < 40:
+                    continue
+                results = detect_all(frame, patterns=patterns)
+                hits = [r for r in results if r.get("detected") and r.get("score", 0) >= min_score]
+                if hits:
+                    last_close = float(frame["Close"].iloc[-1])
+                    last_volume = int(float(frame["Volume"].iloc[-1])) if "Volume" in frame.columns else None
+                    candles = _pattern_scan_candles(frame)
+                    markers = []
+                    levels = []
+                    for r in hits:
+                        detail = r.get("detail") or {}
+                        for m in detail.get("markers", []):
+                            marker = _pattern_marker(m, frame)
+                            if marker:
+                                markers.append(marker)
+                        if detail.get("trigger") is not None:
+                            levels.append({
+                                "pattern": r["pattern"],
+                                "price": round(float(detail["trigger"]), 4),
+                                "label": "Breakout" if r["pattern"] != "bear_flag" else "Breakdown",
+                            })
+                    matches.append({
+                        "ticker": ticker,
+                        "interval": interval,
+                        "as_of": datetime.now().isoformat(),
+                        "last_close": round(last_close, 4),
+                        "last_volume": last_volume,
+                        "patterns": hits,
+                        "best_pattern": hits[0]["pattern"],
+                        "best_score": hits[0]["score"],
+                        "candles": candles,
+                        "markers": markers,
+                        "levels": levels,
+                    })
+            except Exception as exc:
+                logger.warning("Pattern scan failed for %s: %s", ticker, exc)
+                continue
+
+        matches.sort(key=lambda m: m.get("best_score", 0), reverse=True)
+        matches = matches[:max_results]
+        update_task_state(
+            task_id,
+            status="completed",
+            progress=100,
+            current="Scan complete",
+            results={
+                "scanned": total,
+                "matched": len(matches),
+                "interval": interval,
+                "patterns_checked": patterns,
+                "min_score": min_score,
+                "as_of": datetime.now().isoformat(),
+                "matches": matches,
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Pattern scan task {task_id} failed: {exc}", exc_info=True)
+        update_task_state(task_id, status="failed", error=str(exc), current=f"Failed: {exc}")
+
+
+@app.post("/api/intelligence/pattern-scan")
+async def start_pattern_scan(request: PatternScanRequest, background_tasks: BackgroundTasks):
+    """Start a technical chart pattern scan as an async background task."""
+    task_id = f"SCAN_{uuid.uuid4().hex[:10].upper()}"
+    init_task_state(task_id, {
+        "status": "running",
+        "progress": 0,
+        "current": "Queued",
+        "request": request.dict(),
+        "created_at": datetime.now().isoformat(),
+    })
+    background_tasks.add_task(_run_pattern_scan_task, task_id, request)
+    return {"task_id": task_id, "status": "running"}
+
 @app.get("/api/intelligence/earnings/{ticker}")
 async def get_earnings(ticker: str):
     """Get earnings calendar for a ticker"""
@@ -9212,6 +9457,12 @@ async def explain_trade_setup(request: TradeSetupExplainRequest):
 _yf_cache = {}
 _yf_cache_lock = threading.Lock()
 _yf_download_lock = threading.Lock()
+# Serializes _bulk_price_changes calls so yfinance downloads never run in
+# parallel. yfinance rate-limits/crashes when the frontend fans out several
+# concurrent batch requests (heatmap, movers) — the old 5s lock-acquire timeout
+# let waiters "degrade" into parallel downloads, which is exactly what produced
+# the null/empty quotes behind the "unavailable" tiles.
+_yf_bulk_semaphore = asyncio.Semaphore(1)
 YF_CACHE_TTL = 300  # seconds
 
 def _get_cached(key: str, ttl: int = None):
@@ -9257,6 +9508,7 @@ YF_FAIL_THRESHOLD = 3                  # consecutive-ish failures before marking
 YF_FAIL_WINDOW_TTL = 60 * 60           # window in which failures accumulate
 YF_LAST_GOOD_TTL = 24 * 3600           # how long a last-good row is retained
 YF_STALE_TTL = 10 * 60                 # how long a last-good row may be served stale
+YF_SYMBOL_STALE_TTL = 30 * 60          # how long a symbol-level last-good may be served stale
 
 def _ticker_is_dead(symbol: str) -> bool:
     return _get_cached(f"dead:{symbol}", ttl=YF_DEAD_TICKER_TTL) is True
@@ -9279,6 +9531,9 @@ def _mark_ticker_failure(symbol: str) -> None:
 def _last_good_cache_key(symbol: str, period: str, interval: str, extended: bool) -> str:
     return f"lastgood:{symbol}:{period}:{interval or 'auto'}:ext={int(extended)}"
 
+def _symbol_last_good_key(symbol: str) -> str:
+    return f"sym_lastgood:{symbol}"
+
 def _cache_last_good(symbol: str, row, period: str, interval: str, extended: bool) -> None:
     if not row or row.get("change_percent") is None:
         return
@@ -9287,6 +9542,10 @@ def _cache_last_good(symbol: str, row, period: str, interval: str, extended: boo
     except (TypeError, ValueError):
         return
     _set_cache(_last_good_cache_key(symbol, period, interval, extended), row, ttl=YF_LAST_GOOD_TTL)
+    # Symbol-level last good, independent of period/interval: lets an interval
+    # window that fails today still surface the most recent known move instead
+    # of dropping the row entirely from the movers tab.
+    _set_cache(_symbol_last_good_key(symbol), row, ttl=YF_LAST_GOOD_TTL)
 
 def _stale_quote(symbol: str, period: str, interval: str, extended: bool, start: str = None, end: str = None):
     """Serve the last good row tagged stale, but only within a short grace window.
@@ -9297,6 +9556,20 @@ def _stale_quote(symbol: str, period: str, interval: str, extended: bool, start:
     if start and end:
         return None
     cached = _get_cached(_last_good_cache_key(symbol, period, interval, extended), ttl=YF_STALE_TTL)
+    if not cached:
+        return None
+    row = dict(cached)
+    row["stale"] = True
+    return row
+
+def _symbol_stale_quote(symbol: str):
+    """Serve the most recent known move for a symbol from *any* period/interval.
+
+    Unlike _stale_quote, this is not tied to the exact window requested, so a
+    window that yfinance is flaky on still keeps the symbol visible with its
+    last known change (tagged stale) instead of silently dropping it.
+    """
+    cached = _get_cached(_symbol_last_good_key(symbol), ttl=YF_SYMBOL_STALE_TTL)
     if not cached:
         return None
     row = dict(cached)
@@ -9395,7 +9668,10 @@ def _calc_change_pct(ticker: str, period: str, interval: str = None, extended: b
             kwargs = {"period": "2d" if (not interval and period == "1d") else period}
         if interval:
             if not (start and end):
-                kwargs["period"] = "1d"
+                # period='2d' gives yesterday's bars so we can anchor the move to
+                # the previous regular-session close (standard daily change) instead
+                # of today's open.
+                kwargs["period"] = "2d"
             kwargs["interval"] = interval
             if extended:
                 kwargs["prepost"] = True
@@ -9407,7 +9683,11 @@ def _calc_change_pct(ticker: str, period: str, interval: str = None, extended: b
             if vals is None or len(vals) < 1:
                 return None, None, None
             end = vals[-1]
-            start = vals[0] if len(vals) >= 2 else None
+            # Previous-close baseline only for period-based windows; date-range
+            # requests keep the standard "return over the range" (first-bar) basis.
+            start = _previous_intraday_close(hist) if not (start and end) else None
+            if start is None:
+                start = vals[0] if len(vals) >= 2 else None
             if start is None:
                 return None, round(end, 2), None
         else:
@@ -9551,6 +9831,20 @@ def _last_valid_close(frame):
     except Exception:
         return None
 
+def _last_bar_date_et(frame):
+    """US/Eastern calendar date of the last bar in an intraday frame."""
+    try:
+        if frame is None or frame.empty:
+            return None
+        idx = pd.DatetimeIndex(frame.index)
+        if idx.tz is None:
+            idx = idx.tz_localize("America/New_York")
+        else:
+            idx = idx.tz_convert("America/New_York")
+        return idx.max().date()
+    except Exception:
+        return None
+
 def _first_intraday_open(frame):
     """Get today's opening price from intraday data (first valid Open or Close)."""
     try:
@@ -9588,6 +9882,34 @@ def _previous_daily_close(frame):
         if len(close) >= 2:
             return float(close.iloc[-2])
         return float(close.iloc[0])
+    except Exception:
+        return None
+
+def _previous_intraday_close(frame):
+    """Last regular-session close before today's first bar, from an intraday frame
+    that spans more than one day (e.g. period='2d'). Used so intraday windows
+    report the standard daily change vs previous close instead of 'since open'."""
+    try:
+        import pandas as pd
+        if frame is None or frame.empty or "Close" not in frame:
+            return None
+        close = frame["Close"].dropna()
+        if close.empty:
+            return None
+        today_et = pd.Timestamp.now(tz="America/New_York").date()
+        cutoff = pd.Timestamp("16:00").time()
+        previous = []
+        for idx, value in close.items():
+            ts = pd.Timestamp(idx)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("America/New_York")
+            else:
+                ts = ts.tz_convert("America/New_York")
+            if ts.date() < today_et and ts.time() <= cutoff:
+                previous.append(float(value))
+        if previous:
+            return previous[-1]
+        return None
     except Exception:
         return None
 
@@ -9715,6 +10037,17 @@ def _download_batch_locked(yf_module, batch_tickers, lock_acquire_timeout: float
     return yf_module.download(batch_tickers, **kwargs)
 
 async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None, batch_size: int = 8, batch_timeout: float = 25.0) -> dict:
+    """Fetch price/change data for many tickers, one yfinance download at a time.
+
+    Concurrent heatmap/mover fan-out previously triggered parallel yfinance
+    downloads (via the lock-acquire timeout) that yfinance rate-limits, returning
+    null quotes that showed up as "unavailable" tiles. The semaphore serializes
+    the whole operation so each batch is downloaded by itself and succeeds.
+    """
+    async with _yf_bulk_semaphore:
+        return await _bulk_price_changes_serial(tickers, period, interval, extended, start, end, batch_size, batch_timeout)
+
+async def _bulk_price_changes_serial(tickers: List[str], period: str = "1d", interval: str = None, extended: bool = False, start: str = None, end: str = None, batch_size: int = 8, batch_timeout: float = 25.0) -> dict:
     """Fetch price/change data for many tickers, downloading in small sequential batches.
 
     Splitting into batches keeps the yfinance calls short (fewer tickers per request),
@@ -9737,7 +10070,9 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
     prices = {}
     live_tickers = [t for t in clean_tickers if not _ticker_is_dead(t)]
 
-    for batch in _chunks(live_tickers, max(2, int(batch_size))):
+    async def _fetch_batch(batch):
+        """Download one batch. On timeout the batch is split in half and retried so
+        a single slow symbol cannot silently lose the whole chunk from the UI."""
         try:
             if use_date_range:
                 kwargs = {"start": start, "end": end, "group_by": 'ticker', "progress": False, "auto_adjust": True, "threads": True}
@@ -9750,12 +10085,12 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                     timeout=batch_timeout,
                 )
                 prices.update(_prices_from_bulk(bulk, batch, extended, interval))
-            elif not interval and period == "1d":
+            elif period == "1d":
                 def download_intraday_and_daily(batch_tickers):
                     intraday_data = _download_batch_locked(
                         yf, batch_tickers,
                         period="1d",
-                        interval="1m",
+                        interval=interval or "1m",
                         group_by='ticker',
                         progress=False,
                         auto_adjust=False,
@@ -9777,6 +10112,7 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                     loop.run_in_executor(None, lambda b=batch: download_intraday_and_daily(b)),
                     timeout=batch_timeout + 10,
                 )
+                today_et = pd.Timestamp.now(tz="America/New_York").date()
                 for ticker in batch:
                     try:
                         intraday_frame = _extract_yf_ticker_frame(intraday, ticker)
@@ -9785,12 +10121,29 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                         baseline = _previous_daily_close(daily_frame)
                         if baseline is None:
                             baseline = _first_intraday_open(intraday_frame)
+                        # When the market is closed (weekend/holiday/pre-open) the
+                        # intraday frame is the last completed session, so latest ~=
+                        # previous daily close and the move looks like 0.0%. In that
+                        # case fall back to the last completed session's actual daily
+                        # move (e.g. Fri vs Thu) and tag it stale.
+                        stale = False
+                        last_bar_date = _last_bar_date_et(intraday_frame)
+                        if last_bar_date is not None and last_bar_date < today_et:
+                            stale = True
+                            daily_vals = []
+                            if daily_frame is not None and "Close" in daily_frame:
+                                daily_vals = daily_frame["Close"].dropna().values
+                            if len(daily_vals) >= 2:
+                                latest = float(daily_vals[-1])
+                                baseline = float(daily_vals[-2])
                         volume = None
                         if intraday_frame is not None and "Volume" in intraday_frame:
                             vol_vals = intraday_frame["Volume"].dropna().values
                             volume = vol_vals.sum() if len(vol_vals) > 0 else None
                         built = _build_intraday_change(latest, baseline, volume)
                         if built is not None:
+                            if stale:
+                                built["stale"] = True
                             _enrich_with_daily_stats(built, daily_frame)
                             prices[ticker] = built
                     except Exception:
@@ -9807,9 +10160,16 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
                 )
                 prices.update(_prices_from_bulk(bulk, batch, extended, interval))
         except asyncio.TimeoutError:
-            logger.warning(f"_bulk_price_changes batch timeout: {batch}")
+            logger.warning(f"_bulk_price_changes batch timeout ({len(batch)} symbols): {batch}")
+            if len(batch) > 2:
+                mid = len(batch) // 2
+                await _fetch_batch(batch[:mid])
+                await _fetch_batch(batch[mid:])
         except Exception as e:
             logger.warning(f"_bulk_price_changes batch failed ({batch}): {e}")
+
+    for batch in _chunks(live_tickers, max(2, int(batch_size))):
+        await _fetch_batch(batch)
 
         for sym in batch:
             if sym in prices:
@@ -9828,6 +10188,8 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
             for sym, r in zip(missing, fb_results):
                 if isinstance(r, Exception) or not r:
                     stale = _stale_quote(sym, period, interval, extended, start=start, end=end)
+                    if stale is None:
+                        stale = _symbol_stale_quote(sym)
                     if stale is not None:
                         prices[sym] = stale
                     else:
@@ -9841,6 +10203,8 @@ async def _bulk_price_changes(tickers: List[str], period: str = "1d", interval: 
     for sym in clean_tickers:
         if sym not in prices:
             stale = _stale_quote(sym, period, interval, extended, start=start, end=end)
+            if stale is None:
+                stale = _symbol_stale_quote(sym)
             if stale is not None:
                 prices[sym] = stale
     return prices
@@ -11187,7 +11551,7 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
                         # Only task-creating tools may register a background task.
                         # Status tools also echo task_id, which must never start a
                         # second polling loop or Task Center card.
-                        if tool_name in {"generate_strategy", "run_backtest", "download_market_data"} and isinstance(result, dict) and result.get("task_id"):
+                        if tool_name in {"generate_strategy", "run_backtest", "download_market_data", "screen_undervalued_stocks", "scan_chart_patterns"} and isinstance(result, dict) and result.get("task_id"):
                             task_id = result["task_id"]
                             public_tool_name = _public_tool_label(tool_name)
                             task_label = f"{public_tool_name}: {result.get('ticker', result.get('strategy', 'Task'))}"
@@ -11199,6 +11563,10 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
                                 task_type = "backtest"
                             elif tool_name == "download_market_data":
                                 task_type = "download"
+                            elif tool_name == "screen_undervalued_stocks":
+                                task_type = "screen"
+                            elif tool_name == "scan_chart_patterns":
+                                task_type = "pattern_scan"
                             else:
                                 task_type = "task"
                             
@@ -11216,6 +11584,10 @@ async def chat_with_tools_streaming(request: AIChatRequest, http_request: Reques
                                 max_seconds = 600  # 10 minutes
                             elif tool_name == "run_backtest":
                                 max_seconds = 1800  # 30 minutes for backtests
+                            elif tool_name == "screen_undervalued_stocks":
+                                max_seconds = 600  # 10 minutes for screens
+                            elif tool_name == "scan_chart_patterns":
+                                max_seconds = 600  # 10 minutes for pattern scans
                             else:
                                 max_seconds = 1200  # 20 minutes default
                             
@@ -11694,7 +12066,7 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
 
                         # Only task-creating tools may register a background task.
                         # check_task_status returns the queried ID too.
-                        if tool_name in {"generate_strategy", "run_backtest", "download_market_data"} and isinstance(result, dict) and result.get("task_id"):
+                        if tool_name in {"generate_strategy", "run_backtest", "download_market_data", "screen_undervalued_stocks", "scan_chart_patterns"} and isinstance(result, dict) and result.get("task_id"):
                             task_id = result["task_id"]
                             task_label = f"{public_tool_name}: {result.get('ticker', result.get('strategy', 'Task'))}"
 
@@ -11704,6 +12076,10 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                                 task_type = "backtest"
                             elif tool_name == "download_market_data":
                                 task_type = "download"
+                            elif tool_name == "screen_undervalued_stocks":
+                                task_type = "screen"
+                            elif tool_name == "scan_chart_patterns":
+                                task_type = "pattern_scan"
                             else:
                                 task_type = "task"
 
@@ -11717,6 +12093,10 @@ async def chat_strands_agent_loop(request: AIChatRequest, http_request: Request)
                                 max_seconds = 600  # 10 minutes for generation
                             elif tool_name == "run_backtest":
                                 max_seconds = 1800  # 30 minutes for backtests (can be very slow)
+                            elif tool_name == "screen_undervalued_stocks":
+                                max_seconds = 600  # 10 minutes for screens
+                            elif tool_name == "scan_chart_patterns":
+                                max_seconds = 600  # 10 minutes for pattern scans
                             else:
                                 max_seconds = 1200  # 20 minutes default
 

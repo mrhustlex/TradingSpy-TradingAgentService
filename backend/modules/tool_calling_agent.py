@@ -16,7 +16,7 @@ from functools import lru_cache
 from datetime import datetime, timedelta
 
 from modules.web_news_tools import get_news, web_search, fetch_website
-from modules.orchestration_tools import list_available_strategies, get_strategy_code, list_available_datasets, generate_strategy, run_backtest, download_market_data, check_task_status
+from modules.orchestration_tools import list_available_strategies, get_strategy_code, list_available_datasets, generate_strategy, run_backtest, download_market_data, check_task_status, scan_chart_patterns, BACKEND_URL
 from modules.action_tools import ask_user_for_clarification, get_price_chart
 from modules.expected_pattern import generate_expected_pattern
 from modules.pattern_scanner import scan_bullish_patterns
@@ -1715,8 +1715,7 @@ def get_stock_deep_dive(ticker: str, focus: str = "full", include_web: bool = Tr
     }
 
 
-@tool
-def screen_undervalued_stocks(
+def screen_undervalued_compute(
     universe: str = "default",
     requirements: str = "undervalued fundamentals with positive growth and profitability",
     max_results: int = 5,
@@ -1728,8 +1727,7 @@ def screen_undervalued_stocks(
 ) -> dict:
     """Search a ticker universe for fundamentally undervalued stock candidates.
 
-    Use this when the user asks to keep searching for undervalued stocks or asks
-    for a value/fundamental screen with custom requirements.
+    This is the synchronous compute core used by the backend async screen task.
 
     Args:
         universe: Preset name (default, high-market-cap, leverage, semis, software-ai, financials, healthcare, energy, consumer, industrials) or comma-separated tickers
@@ -1952,6 +1950,66 @@ def screen_undervalued_stocks(
     }
 
 
+@tool
+def screen_undervalued_stocks(
+    universe: str = "default",
+    requirements: str = "undervalued fundamentals with positive growth and profitability",
+    max_results: int = 5,
+    max_checked: int = 30,
+    include_insiders: bool = False,
+    include_news: bool = True,
+    include_options: bool = True,
+    include_market_context: bool = True,
+) -> dict:
+    """Search a ticker universe for fundamentally undervalued stock candidates. This starts an async task.
+
+    Use this when the user asks to keep searching for undervalued stocks or asks
+    for a value/fundamental screen with custom requirements.
+
+    Args:
+        universe: Preset name (default, high-market-cap, leverage, semis, software-ai, financials, healthcare, energy, consumer, industrials) or comma-separated tickers
+        requirements: Natural language filters such as "profitable growth, PEG under 2, forward PE under 30, insider buying preferred"
+        max_results: Number of passing candidates to return
+        max_checked: Maximum symbols to inspect this round
+        include_insiders: Whether to fetch insider trades for promising candidates
+        include_news: Whether to attach recent headlines to passing candidates
+        include_options: Whether to attach a lightweight options/expiration overview to passing candidates
+        include_market_context: Whether to include broad market and sector backdrop
+
+    Returns:
+        dict with 'task_id' to track the screen progress
+    """
+    import requests as _requests
+
+    max_results = max(1, min(int(max_results or 5), 10))
+    max_checked = max(max_results, min(int(max_checked or 30), 60))
+    payload = {
+        "universe": universe,
+        "requirements": requirements,
+        "max_results": max_results,
+        "max_checked": max_checked,
+        "include_insiders": bool(include_insiders),
+        "include_news": bool(include_news),
+        "include_options": bool(include_options),
+        "include_market_context": bool(include_market_context),
+    }
+    try:
+        response = _requests.post(f"{BACKEND_URL}/api/intelligence/screen", json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "task_id": data.get("task_id"),
+                "message": f"Fundamental screen started. Task ID: {data.get('task_id')}. This will take 20-60 seconds.",
+                "universe": universe,
+                "requirements": requirements,
+            }
+        return {"success": False, "error": f"HTTP {response.status_code}", "detail": response.text[:300]}
+    except Exception as e:
+        logger.error(f"screen_undervalued_stocks error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 def calculate_rsi(prices, period=14):
     """Calculate RSI indicator"""
     if prices is None or len(prices) <= period:
@@ -2113,6 +2171,7 @@ ALL_TOOLS = [
     run_backtest,
     download_market_data,
     check_task_status,
+    scan_chart_patterns,
     ask_user_for_clarification,
     get_price_chart,
     generate_expected_pattern,

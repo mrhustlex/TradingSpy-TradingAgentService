@@ -249,6 +249,52 @@ def download_market_data(ticker: str, period: str = "1y", interval: str = "1d", 
 
 
 @tool
+def scan_chart_patterns(universe: str = "indices", tickers: list = None, interval: str = "1d", patterns: list = None, min_score: float = 55.0, max_results: int = 25) -> dict:
+    """Scan a universe of stocks for special technical chart patterns (VCP, cup & handle, bull/bear flags). This starts an async task.
+
+    Use this when the user asks to find stocks forming a VCP, cup-with-handle,
+    bull flag, or similar special chart setup across a list of tickers.
+
+    Args:
+        universe: Preset universe (mag7, faang, semiconductors, software, banks, energy, healthcare, consumer, industrials, crypto, indices) — ignored when tickers is provided
+        tickers: Optional explicit list of symbols (e.g., ['AAPL', 'NVDA', 'QQQ'])
+        interval: Candle interval (default '1d')
+        patterns: Pattern types to look for: vcp, cup_handle, bull_flag, bear_flag (default all three)
+        min_score: Minimum detection score 0-100 (default 55)
+        max_results: Maximum matches to return (default 25)
+
+    Returns:
+        dict with 'task_id' to track the scan progress
+    """
+    import requests as _requests
+
+    payload = {
+        "universe": universe,
+        "tickers": tickers or None,
+        "interval": interval,
+        "patterns": patterns or None,
+        "min_score": min_score,
+        "max_results": max_results,
+    }
+    try:
+        response = _requests.post(f"{BACKEND_URL}/api/intelligence/pattern-scan", json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "success": True,
+                "task_id": data.get("task_id"),
+                "message": f"Pattern scan started. Task ID: {data.get('task_id')}. This will take 20-60 seconds.",
+                "universe": universe,
+                "patterns": patterns,
+                "interval": interval,
+            }
+        return {"success": False, "error": f"HTTP {response.status_code}", "detail": response.text[:300]}
+    except Exception as e:
+        logger.error(f"scan_chart_patterns error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@tool
 def check_task_status(task_id: str) -> dict:
     """Check the status of an async task (strategy generation, backtest, or data download).
     

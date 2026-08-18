@@ -11,6 +11,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import { API_BASE, SETTINGS_URL, DATA_SERVICE, BACKTEST_SERVICE } from '../config';
+import useSheetResize from './useSheetResize';
 
 const DEFAULT_PROVIDER = 'google_ai_studio';
 const DEFAULT_MODEL = 'gemini-2.5-flash';
@@ -36,6 +37,7 @@ const saveLocalKeys = (settings) => {
 };
 
 const MobileSettings = ({ notify }) => {
+  const { sheetHeight: resetSheetHeight, handleProps: resetHandleProps, sheetStyle: resetSheetStyle } = useSheetResize();
   const [settings, setSettings] = useState({
     default_provider: localStorage.getItem('settings_default_provider') || DEFAULT_PROVIDER,
     default_model: localStorage.getItem('settings_default_model') || DEFAULT_MODEL,
@@ -296,12 +298,13 @@ const MobileSettings = ({ notify }) => {
           <div className="mobile-sheet-overlay" onClick={() => setShowResetConfirm(false)}>
             <motion.div
               className="mobile-sheet"
+              style={resetSheetStyle}
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="mobile-sheet-handle" />
+              <div className="mobile-sheet-handle" {...resetHandleProps} />
               <div className="mobile-sheet-header">
                 <span className="mobile-sheet-title" style={{ color: 'var(--brand-red)' }}>
                   Confirm Reset

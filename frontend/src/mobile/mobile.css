@@ -782,6 +782,21 @@
   color: var(--text-secondary);
 }
 
+.mobile-updating-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--mobile-spacing-sm);
+  padding: var(--mobile-spacing-sm) var(--mobile-spacing-md);
+  font-size: var(--mobile-text-xs);
+  color: var(--text-secondary);
+}
+
+.mobile-updating-bar .mobile-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 /* ========================================
    Mobile Section Headers
    ======================================== */

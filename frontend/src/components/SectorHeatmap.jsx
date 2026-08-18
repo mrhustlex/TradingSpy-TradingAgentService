@@ -177,14 +177,18 @@ const mergeSectorData = (base = {}, incoming = {}) => {
     for (const [sector, industries] of Object.entries(incoming || {})) {
         if (!merged[sector]) merged[sector] = {};
         for (const [industry, entries] of Object.entries(industries || {})) {
-            if (!merged[sector][industry]) merged[sector][industry] = [];
-            const seen = new Set(merged[sector][industry].map(e => e.ticker));
+            const existing = (merged[sector][industry] || []).slice();
+            const idx = new Map(existing.map((e, i) => [e.ticker, i]));
             for (const entry of entries || []) {
-                if (!entry?.ticker || !seen.has(entry.ticker)) {
-                    merged[sector][industry].push(entry);
-                    if (entry?.ticker) seen.add(entry.ticker);
+                if (!entry?.ticker) continue;
+                if (idx.has(entry.ticker)) {
+                    existing[idx.get(entry.ticker)] = entry; // fresh data wins over stale
+                } else {
+                    idx.set(entry.ticker, existing.length);
+                    existing.push(entry);
                 }
             }
+            merged[sector][industry] = existing;
         }
     }
     return merged;

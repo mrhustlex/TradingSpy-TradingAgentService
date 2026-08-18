@@ -388,7 +388,7 @@ const ChartViewer = ({ data, markers = [], onClose, fileName, allFiles = [], onS
                 const key = `${m.time}-${m.type}`;
                 if (!seen.has(key)) { seen.add(key); cms.push({ time: new Date(m.time).getTime() / 1000, position: m.type === 'Buy' ? 'belowBar' : 'aboveBar', color: m.type === 'Buy' ? '#10b981' : '#ef4444', shape: m.type === 'Buy' ? 'arrowUp' : 'arrowDown', text: `${m.type} @ ${m.price?.toFixed(2)}` }); }
             });
-            candle.setMarkers(cms);
+            candle.setMarkers(cms.sort((a, b) => a.time - b.time));
         }
 
         // S/R Lines

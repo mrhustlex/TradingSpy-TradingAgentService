@@ -24,6 +24,7 @@ import {
   ArrowUpDown,
   Square,
   Trash2,
+  ScanSearch,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Papa from 'papaparse';
@@ -40,6 +41,7 @@ import SharedChatViewer from './components/SharedChatViewer';
 import APITab from './components/APITab';
 import SectorHeatmap from './components/SectorHeatmap';
 import IndustryMovements from './components/IndustryMovements';
+import PatternScanner from './components/PatternScanner';
 import InsiderTrades from './components/InsiderTrades';
 
 // Lazy load ChartViewer to prevent lightweight-charts bundling issues
@@ -453,6 +455,9 @@ const App = () => {
           <div className={`nav-link ${activeTab === 'movements' ? 'active' : ''}`} onClick={() => { setActiveTab('movements'); setIsSidebarOpen(false); }}>
             <ArrowUpDown size={20} /> <span className="sidebar-label">Movements</span>
           </div>
+          <div className={`nav-link ${activeTab === 'patterns' ? 'active' : ''}`} onClick={() => { setActiveTab('patterns'); setIsSidebarOpen(false); }}>
+            <ScanSearch size={20} color="var(--brand-yellow)" /> <span className="sidebar-label">Pattern Scanner</span>
+          </div>
           <div className={`nav-link ${activeTab === 'terminal' ? 'active' : ''}`} onClick={() => { setActiveTab('terminal'); setIsSidebarOpen(false); }}>
             <Zap size={20} /> <span className="sidebar-label">Battle Station</span>
           </div>
@@ -630,6 +635,14 @@ const App = () => {
                 notify={notify}
                 onExplain={(prompt, label) => explainWithAssistant(prompt, label)}
                 onOpenChart={(ticker) => handleViewChart(ticker)}
+              />
+            </motion.div>
+          )}
+          {activeTab === 'patterns' && (
+            <motion.div key="patterns" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <PatternScanner
+                notify={notify}
+                onExplain={(prompt, label) => explainWithAssistant(prompt, label)}
               />
             </motion.div>
           )}
