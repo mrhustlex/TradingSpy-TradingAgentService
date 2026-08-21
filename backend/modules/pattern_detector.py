@@ -109,10 +109,11 @@ def detect_vcp(frame, min_bars: int = 60) -> dict:
         trough_volatilities = []
 
     # Volume should fade as the base tightens (last 10 bars vs base average).
+    # True volume contraction = recent volume is significantly lower (< 80% of base average)
     volume = base["Volume"].astype(float).fillna(0)
     base_avg_volume = float(volume.mean()) if len(volume) else 0.0
     recent_volume = float(volume.tail(10).mean())
-    volume_fade = recent_volume < base_avg_volume * 1.05 if base_avg_volume > 0 else False
+    volume_fade = recent_volume < base_avg_volume * 0.80 if base_avg_volume > 0 else False
 
     # Price should hold in the upper portion of the base near the pivot high.
     position_in_base = (anchor - base_low) / (base_high - base_low) if base_high > base_low else 0.5

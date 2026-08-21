@@ -456,13 +456,13 @@ const App = () => {
             <ArrowUpDown size={20} /> <span className="sidebar-label">Movements</span>
           </div>
           <div className={`nav-link ${activeTab === 'patterns' ? 'active' : ''}`} onClick={() => { setActiveTab('patterns'); setIsSidebarOpen(false); }}>
-            <ScanSearch size={20} color="var(--brand-yellow)" /> <span className="sidebar-label">Pattern Scanner</span>
+            <ScanSearch size={20} /> <span className="sidebar-label">Pattern Scanner</span>
           </div>
           <div className={`nav-link ${activeTab === 'terminal' ? 'active' : ''}`} onClick={() => { setActiveTab('terminal'); setIsSidebarOpen(false); }}>
             <Zap size={20} /> <span className="sidebar-label">Battle Station</span>
           </div>
           <div className={`nav-link ${activeTab === 'studio' ? 'active' : ''}`} onClick={() => { setActiveTab('studio'); setIsSidebarOpen(false); }}>
-            <Sparkles size={20} color="var(--brand-yellow)" /> <span className="sidebar-label">AI Strategy Studio</span>
+            <Sparkles size={20} /> <span className="sidebar-label">AI Strategy Studio</span>
           </div>
           <div className={`nav-link ${activeTab === 'history' ? 'active' : ''}`} onClick={() => { setActiveTab('history'); setIsSidebarOpen(false); }}>
             <List size={20} /> <span className="sidebar-label">Backtest History</span>

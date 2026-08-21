@@ -204,6 +204,10 @@ body {
   flex-shrink: 0;
 }
 
+.logo svg {
+  color: var(--brand-blue);
+}
+
 .nav-link {
   display: flex;
   align-items: center;
@@ -216,15 +220,30 @@ body {
   margin-bottom: 0.5rem;
 }
 
+.nav-link svg {
+  color: var(--brand-blue);
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
+}
+
 .nav-link:hover {
   background-color: var(--bg-accent);
   color: var(--text-main);
+}
+
+.nav-link:hover svg {
+  opacity: 1;
 }
 
 .nav-link.active {
   background-color: var(--brand-blue);
   color: white;
   box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.nav-link.active svg {
+  color: white;
+  opacity: 1;
 }
 
 .main-content {

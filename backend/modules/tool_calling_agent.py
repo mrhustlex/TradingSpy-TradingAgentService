@@ -20,6 +20,7 @@ from modules.orchestration_tools import list_available_strategies, get_strategy_
 from modules.action_tools import ask_user_for_clarification, get_price_chart
 from modules.expected_pattern import generate_expected_pattern
 from modules.pattern_scanner import scan_bullish_patterns
+from modules.trader_system_prompt import TRADER_SYSTEM_PROMPT
 try:
     from market_intelligence import market_intel
 except ImportError:
@@ -2178,7 +2179,10 @@ ALL_TOOLS = [
     scan_bullish_patterns,
 ]
 
-SYSTEM_PROMPT = """You are a sharp, trading assistant with real-time market data and backtesting capabilities.
+SYSTEM_PROMPT = TRADER_SYSTEM_PROMPT
+
+# Legacy prompt preserved below for reference (DO NOT USE - kept for historical context)
+LEGACY_SYSTEM_PROMPT = """You are a sharp, trading assistant with real-time market data and backtesting capabilities.
 Talk like a knowledgeable friend who trades — direct, casual, a bit opinionated.
 Keep responses concise and natural.
 Always respond in the same language the user writes in. If the user writes in Chinese, respond in Chinese. If in Spanish, respond in Spanish. Match their language naturally.
