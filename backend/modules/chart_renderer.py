@@ -60,9 +60,13 @@ def _style(fig, ax, title: str):
 
 
 def _finalize(fig) -> bytes:
-    fig.text(0.5, 0.012, FOOTER_TEXT, ha="center", va="center", fontsize=8, color=TS_MUTED)
+    # Footer sits in its own bottom margin (figure coords) with padding above/below.
+    fig.text(0.5, 0.028, FOOTER_TEXT, ha="center", va="center", fontsize=8, color=TS_MUTED)
+    # Leave explicit breathing room around the plot + a uniform padding so the
+    # title, date labels and footer are never clipped to the image edge.
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.90, bottom=0.15)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", facecolor=TS_BG, dpi=110)
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.25, facecolor=TS_BG, dpi=110)
     plt.close(fig)
     return buf.getvalue()
 
