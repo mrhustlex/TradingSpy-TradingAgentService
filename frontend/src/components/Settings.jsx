@@ -73,6 +73,7 @@ const INITIAL_SETTINGS = {
     enable_openai_compatible_output: true,
     enable_acp_agent_output: false,
     enable_a2a_remote_agent_output: false,
+    enable_agent_tools_output: false,
     remote_agent_auth_token: '',
     remote_agent_auth_token_configured: false,
 };
@@ -227,6 +228,7 @@ const Settings = ({ notify }) => {
                 enable_openai_compatible_output,
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
+                enable_agent_tools_output,
                 litellm_base_url,
                 ollama_base_url,
                 remote_agent_auth_token,
@@ -237,6 +239,7 @@ const Settings = ({ notify }) => {
                 enable_openai_compatible_output,
                 enable_acp_agent_output,
                 enable_a2a_remote_agent_output,
+                enable_agent_tools_output,
                 litellm_base_url,
                 ollama_base_url,
             };
@@ -445,6 +448,19 @@ const Settings = ({ notify }) => {
                                     'Agent card: GET http://localhost:8000/.well-known/agent-card.json',
                                     'Send task: POST http://localhost:8000/a2a/tasks/send',
                                     'Example body: {"message":"Generate until it beats buy and hold for QQQ daily"}',
+                                    'Set a Remote Agent Auth Token before exposing beyond localhost.',
+                                ],
+                            },
+                            {
+                                key: 'enable_agent_tools_output',
+                                title: 'Agent Tools (MCP)',
+                                desc: 'Exposes deterministic tools (market data, quotes, technicals, screener, backtests) via MCP and an OpenAI-style manifest. The remote agent uses its own LLM.',
+                                help: [
+                                    'Use when an external agent (opencode, Hermes, ...) should call TradingSpy functions directly as tools.',
+                                    'MCP server: POST http://localhost:8000/mcp (JSON-RPC: initialize, tools/list, tools/call)',
+                                    'OpenAI tool manifest: GET http://localhost:8000/api/tools/manifest',
+                                    'Invoke: POST http://localhost:8000/api/tools/invoke {"name":"get_quote","arguments":{"ticker":"SPY"}}',
+                                    'In opencode add it under mcp as type "remote" with url http://localhost:8000/mcp.',
                                     'Set a Remote Agent Auth Token before exposing beyond localhost.',
                                 ],
                             },

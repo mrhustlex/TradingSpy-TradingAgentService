@@ -55,6 +55,7 @@ from downloader import download_ticker_data
 from market_intelligence import market_intel
 from mcp_client import yf_mcp
 from acp_agent import router as acp_router
+from agent_tools_router import router as agent_tools_router
 
 # Load environment variables
 load_dotenv()
@@ -789,6 +790,7 @@ class SystemSettings(BaseModel):
     enable_openai_compatible_output: Optional[bool] = True
     enable_acp_agent_output: Optional[bool] = False
     enable_a2a_remote_agent_output: Optional[bool] = False
+    enable_agent_tools_output: Optional[bool] = False
     remote_agent_auth_token: Optional[str] = ""
 
 class SyncConfig(BaseModel):
@@ -874,6 +876,12 @@ ASSISTANT_OUTPUTS = {
         "default": False,
         "env": "ENABLE_A2A_REMOTE_AGENT_OUTPUT",
     },
+    "tools": {
+        "field": "enable_agent_tools_output",
+        "label": "Agent Tools (MCP)",
+        "default": False,
+        "env": "ENABLE_AGENT_TOOLS",
+    },
 }
 
 def _env_bool(name: str) -> Optional[bool]:
@@ -945,6 +953,8 @@ class AssistantOutputGateMiddleware:
             remote_kind = "acp"
         elif path.startswith("/a2a") or path == "/.well-known/agent-card.json":
             remote_kind = "a2a"
+        elif path == "/mcp" or path.startswith("/api/tools"):
+            remote_kind = "tools"
 
         if remote_kind:
             if not _assistant_output_enabled(remote_kind, settings):
@@ -1197,6 +1207,9 @@ def _render_screen_undervalued_answer(result: Dict[str, Any]) -> str:
 
 # ACP (Agent Communication Protocol) router
 app.include_router(acp_router, prefix="/acp")
+
+# Agent Tools (MCP server + OpenAI-style tool manifest/invoke)
+app.include_router(agent_tools_router)
 
 def normalize_provider(provider: Optional[str]) -> str:
     """Normalize provider ids from UI/localStorage/env into backend canonical ids."""
@@ -7818,6 +7831,7 @@ async def get_settings():
     visible["enable_openai_compatible_output"] = _assistant_output_enabled("openai", data)
     visible["enable_acp_agent_output"] = _assistant_output_enabled("acp", data)
     visible["enable_a2a_remote_agent_output"] = _assistant_output_enabled("a2a", data)
+    visible["enable_agent_tools_output"] = _assistant_output_enabled("tools", data)
     visible["remote_agent_auth_token_configured"] = bool(_remote_agent_token(data))
     for key in KEY_FIELDS:
         env_key = key.upper()
@@ -9197,6 +9211,7 @@ async def trading_signal(request: TradingSignalRequest):
             avg_down = _safe_float(down_moves.mean())
             max_move = max(abs(max_up or 0), abs(max_down or 0)) if (max_up is not None or max_down is not None) else None
             up_times = int((usable_returns > 0).sum())
+            down_times = int((usable_returns < 0).sum())
 
             if current_move is None:
                 label = "No signal"

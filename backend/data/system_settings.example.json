@@ -1,4 +1,5 @@
 {
   "default_provider": "google_ai_studio",
-  "default_model": "gemini-2.5-flash"
+  "default_model": "gemini-2.5-flash",
+  "enable_agent_tools_output": false
 }
