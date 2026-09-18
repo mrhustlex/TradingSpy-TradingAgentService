@@ -18,12 +18,12 @@
     "lightweight-charts": "^4.2.1",
     "lucide-react": "^0.471.0",
     "papaparse": "^5.4.1",
-    "react": "^19.2.0",
+    "react": "^19.2.7",
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
-    "@types/react": "^19.2.5",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
