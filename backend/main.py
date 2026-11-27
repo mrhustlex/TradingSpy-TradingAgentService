@@ -325,6 +325,117 @@ def lint_backtrader_strategy_code(code: str) -> List[str]:
                         "for example self.crossover[0] > 0."
                     )
 
+    issues.extend(_lint_same_bar_channel_breakouts(tree))
+    issues.extend(_lint_indexed_scalar_attrs(tree, scalar_attrs))
+    return issues
+
+
+def _self_attr_name(node):
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+        return node.attr
+    return None
+
+
+def _data_line_name(node):
+    """'high' for self.data.high / self.data0.high / self.datas[0].high; None otherwise (e.g. self.data.high(-1))."""
+    if not isinstance(node, ast.Attribute):
+        return None
+    base = node.value
+    is_data = (
+        (isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name) and base.value.id == "self"
+         and base.attr in {"data", "data0"})
+        or (isinstance(base, ast.Subscript) and isinstance(base.value, ast.Attribute)
+            and isinstance(base.value.value, ast.Name) and base.value.value.id == "self" and base.value.attr == "datas")
+    )
+    return node.attr if is_data else None
+
+
+def _is_zero_index(sub):
+    return isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant) and sub.slice.value == 0
+
+
+def _lint_same_bar_channel_breakouts(tree):
+    """Flag close[0] > Highest(high)[0] / close[0] < Lowest(low)[0]: the channel includes the
+    current bar, so a close can never break it and the strategy never trades."""
+    channels = {}  # attr -> ("high"|"low", source line)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.value, ast.Call)):
+            continue
+        attr = _self_attr_name(node.targets[0])
+        func = node.value.func
+        fname = func.attr if isinstance(func, ast.Attribute) else (func.id if isinstance(func, ast.Name) else "")
+        if not attr or not node.value.args:
+            continue
+        src = _data_line_name(node.value.args[0])
+        if fname in {"Highest", "MaxN"} and src in {"high", "close"}:
+            channels[attr] = ("high", src)
+        elif fname in {"Lowest", "MinN"} and src in {"low", "close"}:
+            channels[attr] = ("low", src)
+    if not channels:
+        return []
+
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        left, op, right = node.left, node.ops[0], node.comparators[0]
+        pairs = []
+        if isinstance(op, ast.Gt):
+            pairs = [(left, right, "high"), (right, left, "low")]
+        elif isinstance(op, ast.Lt):
+            pairs = [(left, right, "low"), (right, left, "high")]
+        for price, chan, side in pairs:
+            if not (_is_zero_index(price) and _is_zero_index(chan)):
+                continue
+            if _data_line_name(price.value) != "close":
+                continue
+            attr = _self_attr_name(chan.value)
+            if attr in channels and channels[attr][0] == side:
+                word = "above" if side == "high" else "below"
+                issues.append(
+                    f"Line {node.lineno}: self.{attr} is built from self.data.{channels[attr][1]} including the current bar, "
+                    f"so a close can never be {word} self.{attr}[0] and this strategy will never trade. "
+                    f"Compare to the previous bar's channel instead: self.{attr}[-1]."
+                )
+    return issues
+
+
+def _lint_indexed_scalar_attrs(tree, already_known):
+    """Flag self.x[...] when self.x is only ever assigned plain numbers/None (e.g. float(self.data.close[0]))."""
+    scalar_like, other = set(), set()
+
+    def is_scalar_value(v):
+        if isinstance(v, ast.Constant):
+            return v.value is None or isinstance(v.value, (int, float))
+        if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id in {"float", "int", "max", "min", "abs", "round", "len"}:
+            return True
+        if isinstance(v, ast.Subscript) and _data_line_name(v.value) is not None:
+            return True
+        if isinstance(v, ast.BinOp):
+            return is_scalar_value(v.left) or is_scalar_value(v.right)
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                attr = _self_attr_name(t)
+                if attr:
+                    (scalar_like if is_scalar_value(node.value) else other).add(attr)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            attr = _self_attr_name(node.target)
+            if attr and node.value is not None:
+                (scalar_like if is_scalar_value(node.value) else other).add(attr)
+
+    suspects = scalar_like - other - set(already_known)
+    issues = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            attr = _self_attr_name(node.value)
+            if attr in suspects:
+                issues.append(
+                    f"Line {node.lineno}: self.{attr} holds a plain number, not a data line; "
+                    f"use self.{attr} without [0] or [-1]."
+                )
     return issues
 
 
@@ -4265,7 +4376,8 @@ Repair requirements:
                     generation_error = (
                         f"Round {round_number} produced only inactive strategies: every candidate took zero trades. "
                         "Loosen entry filters, remove rare condition stacks, and include at least one realistic entry path "
-                        "that should fire on this dataset."
+                        "that should fire on this dataset. A common cause: comparing the close to a Highest/Lowest channel "
+                        "that includes the current bar (use channel[-1], the previous bar's value)."
                     )
                 else:
                     generation_error = (
@@ -6234,7 +6346,8 @@ Each strategy MUST strictly follow Backtrader conventions:
 16. If the user asks for rules like "premarket up X%, enter, then leave", calculate the premarket move from extended-hours bars before the regular open, optionally confirm with premarket volume using `self.data.volume[0]` or accumulated scalar volume, enter only during the intended regular-session time window, and close by the requested exit time or before the session ends. Guard the logic so it also works when the dataset does not contain extended-hours bars.
 17. Keep every Python string literal on one physical line with matching quotes. Put explanations in JSON `description` or `analysis`, not in multiline strings inside the Python code.
 18. Reuse the standard module/class/params/__init__/next structure. Vary strategy parameters, indicators, state, and entry/exit conditions; do not reinvent unrelated boilerplate.
-19. Before responding, perform a final syntax review equivalent to `ast.parse(code)` for every strategy: check quotes, parentheses, indentation, class name, and complete method bodies.
+19. For Donchian/Highest/Lowest breakouts, compare the close to the PREVIOUS bar's channel: `self.data.close[0] > self.donchian_high[-1]` and `self.data.close[0] < self.donchian_low[-1]` (or build the channel from `self.data.high(-1)`). The current bar's high/low is part of the channel, so comparing against `[0]` can never trigger and the strategy will take zero trades.
+20. Before responding, perform a final syntax review equivalent to `ast.parse(code)` for every strategy: check quotes, parentheses, indentation, class name, and complete method bodies.
 Use this known-valid structural pattern (replace the example indicators and conditions with the requested strategy logic):
 ```
 import backtrader as bt
