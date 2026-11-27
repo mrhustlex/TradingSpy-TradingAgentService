@@ -238,6 +238,8 @@ def run_single_backtest(params):
 
         # Auto-detect date format from CSV file
         dtformat = '%Y-%m-%d'  # Default for daily data
+        feed_timeframe = bt.TimeFrame.Days
+        feed_compression = 1
         try:
             with open(datapath, 'r') as f:
                 f.readline()  # Skip header
@@ -247,6 +249,17 @@ def run_single_backtest(params):
                     # If it contains a space, it has time component
                     if ' ' in first_date:
                         dtformat = '%Y-%m-%d %H:%M:%S'
+                        # Intraday data: tell Backtrader the bar size. Without this it
+                        # assumes daily bars, stamps every bar of a day with the same
+                        # end-of-day time, and orders only fill once per day.
+                        second_line = f.readline()
+                        if second_line:
+                            t0 = datetime.datetime.strptime(first_date, dtformat)
+                            t1 = datetime.datetime.strptime(second_line.split(',')[0].strip(), dtformat)
+                            minutes = int((t1 - t0).total_seconds() // 60)
+                            if minutes > 0:
+                                feed_timeframe = bt.TimeFrame.Minutes
+                                feed_compression = minutes
         except:
             pass  # Use default if detection fails
 
@@ -263,6 +276,8 @@ def run_single_backtest(params):
             close=4,
             volume=5,
             openinterest=6,
+            timeframe=feed_timeframe,
+            compression=feed_compression,
             headers=True # Matches pandas to_csv header
         )
         cerebro.adddata(data)
@@ -321,7 +336,20 @@ def run_single_backtest_with_timeout(params, timeout_seconds=45):
     proc = ctx.Process(target=_run_single_backtest_child, args=(params, result_queue))
     proc.daemon = True
     proc.start()
-    proc.join(timeout_seconds)
+    # Read the result BEFORE joining: a large result (many trades) fills the pipe,
+    # and the child can't exit until it's drained, so join-first deadlocks.
+    early_result = None
+    try:
+        early_result = result_queue.get(timeout=timeout_seconds)
+    except Exception:
+        early_result = None
+    if early_result is not None:
+        proc.join(10)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(2)
+        return early_result
+    proc.join(1)
 
     if proc.is_alive():
         proc.terminate()

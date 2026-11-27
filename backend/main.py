@@ -747,6 +747,12 @@ def normalize_agent_run_request(request: AgentRunRequest) -> AgentRunRequest:
     model = normalize_model(provider, request.model or settings.get("default_model") or os.getenv("DEFAULT_MODEL") or "gemini-2.5-flash")
     request.provider = provider
     request.model = model
+    # Small local models sometimes return the intent name as the workflow.
+    workflow_aliases = {
+        "strategy_improve": "strategy_race", "optimize": "strategy_race", "strategy_optimize": "strategy_race",
+        "strategy_generate": "strategy_create", "generate": "strategy_create",
+    }
+    request.workflow = workflow_aliases.get((request.workflow or "").strip().lower(), request.workflow)
     return request
 
 class SystemSettings(BaseModel):
