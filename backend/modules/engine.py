@@ -321,7 +321,20 @@ def run_single_backtest_with_timeout(params, timeout_seconds=45):
     proc = ctx.Process(target=_run_single_backtest_child, args=(params, result_queue))
     proc.daemon = True
     proc.start()
-    proc.join(timeout_seconds)
+    # Read the result BEFORE joining: a large result (many trades) fills the pipe,
+    # and the child can't exit until it's drained, so join-first deadlocks.
+    early_result = None
+    try:
+        early_result = result_queue.get(timeout=timeout_seconds)
+    except Exception:
+        early_result = None
+    if early_result is not None:
+        proc.join(10)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(2)
+        return early_result
+    proc.join(1)
 
     if proc.is_alive():
         proc.terminate()
